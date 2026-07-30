@@ -1,0 +1,129 @@
+.display-page {
+  display:grid;
+  grid-template-columns:1.25fr .75fr;
+  gap:18px
+}
+.display-map,.display-options {
+  padding:25px
+}
+.display-map-title h2,.display-options h2 {
+  font-size:30px;
+  margin:7px 0 20px
+}
+.screen-diagram {
+  min-height:320px;
+  display:grid;
+  grid-template-columns:1fr 82px 150px 82px 1.2fr;
+  align-items:center
+}
+.screen-node {
+  min-height:190px;
+  border:1px solid rgba(106,207,255,.28);
+  border-radius:22px;
+  background:linear-gradient(145deg,rgba(35,72,105,.38),rgba(5,14,25,.72));
+  box-shadow:inset 0 0 35px rgba(59,191,255,.055);
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  text-align:center
+}
+.screen-node::before {
+  content:"";
+  width:72%;
+  height:5px;
+  border-radius:99px;
+  background:rgba(71,204,255,.18);
+  margin-bottom:28px
+}
+.screen-node small {
+  font-size:9px;
+  letter-spacing:.16em;
+  color:var(--cyan)
+}
+.screen-node strong {
+  font-size:22px;
+  margin:7px 0
+}
+.screen-node span,.core-node span {
+  color:var(--muted);
+  font-size:11px
+}
+.core-node {
+  text-align:center;
+  display:flex;
+  flex-direction:column;
+  align-items:center
+}
+.core-node b {
+  width:76px;
+  height:76px;
+  border-radius:25px;
+  display:grid;
+  place-items:center;
+  font-size:30px;
+  background:linear-gradient(145deg,#3ad7ef,#4f5dff);
+  box-shadow:0 0 38px rgba(50,204,255,.24)
+}
+.core-node strong {
+  margin:10px 0 2px
+}
+.flow-line {
+  display:flex;
+  align-items:center;
+  justify-content:space-around
+}
+.flow-line i {
+  width:7px;
+  height:7px;
+  border-radius:50%;
+  background:#4ddcff;
+  box-shadow:0 0 10px #4ddcff;
+  animation:dataflow 1.6s ease-in-out infinite
+}
+.flow-line i:nth-child(2) {
+  animation-delay:.25s
+}
+.flow-line i:nth-child(3) {
+  animation-delay:.5s
+}
+.display-facts {
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:10px
+}
+.display-facts div {
+  padding:14px;
+  border-radius:15px;
+  background:rgba(255,255,255,.035);
+  display:flex;
+  flex-direction:column
+}
+.display-facts span {
+  font-size:10px;
+  color:var(--muted)
+}
+.display-facts b {
+  font-size:12px;
+  margin-top:5px
+}
+.display-options {
+  overflow:auto
+}
+@keyframes dataflow {
+  50% {
+    transform:scale(1.7);
+    opacity:.35
+  }
+}
+@media(max-width:980px) {
+  .display-page {
+    grid-template-columns:1fr
+  }
+  .screen-diagram {
+    grid-template-columns:1fr 45px 110px 45px 1fr
+  }
+  .display-facts {
+    grid-template-columns:1fr
+  }
+}

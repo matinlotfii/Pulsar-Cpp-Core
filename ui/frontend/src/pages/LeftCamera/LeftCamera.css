@@ -1,0 +1,217 @@
+.camera-page-grid {
+  display:grid;
+  grid-template-columns:minmax(0,1.45fr) minmax(320px,.72fr);
+  gap:18px;
+  min-height:calc(100vh - 132px)
+}
+.camera-stage,.camera-controls {
+  padding:16px
+}
+.camera-stage {
+  display:flex;
+  flex-direction:column
+}
+.camera-stage .camera-preview {
+  flex:1;
+  min-height:350px
+}
+.camera-meta {
+  display:flex;
+  gap:18px;
+  padding:12px 4px 3px;
+  color:var(--muted);
+  font-size:12px
+}
+.camera-actions {
+  display:grid;
+  grid-template-columns:repeat(4,1fr);
+  gap:10px;
+  margin-top:12px
+}
+.camera-actions button {
+  height:76px;
+  border-radius:18px;
+  background:rgba(255,255,255,.045);
+  border:1px solid var(--line);
+  color:var(--text);
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:6px;
+  cursor:pointer
+}
+.camera-actions button:hover,.camera-actions button.is-active {
+  background:rgba(56,189,248,.12);
+  border-color:rgba(56,189,248,.35)
+}
+.camera-actions button.is-danger {
+  background:rgba(255,74,96,.13);
+  border-color:rgba(255,74,96,.35)
+}
+.camera-actions svg {
+  width:23px
+}
+.snowflake,.rotate-symbol {
+  font-size:23px
+}
+.camera-controls {
+  overflow:auto
+}
+.panel-heading {
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  margin-bottom:8px
+}
+.panel-heading span:first-child {
+  font-size:9px;
+  letter-spacing:.18em;
+  color:var(--muted)
+}
+.panel-heading h2 {
+  margin:3px 0 0;
+  font-size:23px
+}
+.connection-pill {
+  padding:7px 10px;
+  border-radius:999px;
+  background:rgba(255,82,105,.12);
+  color:#ff8291;
+  font-size:10px;
+  font-weight:800
+}
+.connection-pill.is-online {
+  background:rgba(48,213,146,.12);
+  color:#49e5a5
+}
+.step-control {
+  padding:15px 0;
+  border-bottom:1px solid var(--line)
+}
+.step-control>div:first-child {
+  display:flex;
+  justify-content:space-between;
+  align-items:center
+}
+.step-control span {
+  font-size:13px;
+  color:var(--muted)
+}
+.step-control strong {
+  font-size:20px;
+  color:#8edfff
+}
+.step-actions {
+  display:grid;
+  grid-template-columns:38px 1fr 38px;
+  gap:10px;
+  align-items:center;
+  margin-top:10px
+}
+.step-actions button {
+  width:38px;
+  height:38px;
+  border-radius:13px;
+  border:1px solid var(--line);
+  background:rgba(255,255,255,.05);
+  color:var(--cyan);
+  display:grid;
+  place-items:center;
+  cursor:pointer
+}
+.step-actions button svg {
+  width:18px
+}
+.step-actions input {
+  width:100%;
+  accent-color:#43c8ff
+}
+.toggle-row {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:16px 0;
+  border-bottom:1px solid var(--line);
+  cursor:pointer
+}
+.toggle-row>span {
+  display:flex;
+  flex-direction:column
+}
+.toggle-row strong {
+  font-size:13px
+}
+.toggle-row small {
+  font-size:10px;
+  color:var(--muted);
+  margin-top:3px
+}
+.toggle-row input {
+  display:none
+}
+.toggle-row i {
+  width:46px;
+  height:26px;
+  border-radius:999px;
+  background:#263549;
+  position:relative;
+  transition:.2s
+}
+.toggle-row i::after {
+  content:"";
+  position:absolute;
+  width:20px;
+  height:20px;
+  border-radius:50%;
+  left:3px;
+  top:3px;
+  background:#afbdd0;
+  transition:.2s
+}
+.toggle-row input:checked+i {
+  background:#1686b8
+}
+.toggle-row input:checked+i::after {
+  transform:translateX(20px);
+  background:white
+}
+.control-group {
+  padding:16px 0 4px
+}
+.control-group>label {
+  display:block;
+  font-size:12px;
+  color:var(--muted);
+  margin-bottom:10px
+}
+.segmented {
+  display:flex;
+  padding:3px;
+  border-radius:13px;
+  background:rgba(1,8,16,.55);
+  border:1px solid var(--line)
+}
+.segmented button {
+  flex:1;
+  padding:9px 6px;
+  border:0;
+  border-radius:10px;
+  background:transparent;
+  color:var(--muted);
+  font-size:11px;
+  cursor:pointer
+}
+.segmented button.is-active {
+  background:rgba(63,190,255,.16);
+  color:#addef7;
+  box-shadow:inset 0 0 0 1px rgba(76,202,255,.25)
+}
+@media(max-width:900px) {
+  .camera-page-grid {
+    grid-template-columns:1fr
+  }
+  .camera-stage .camera-preview {
+    min-height:300px
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "skipLibCheck": true,
+    "module": "ESNext",
+    "moduleResolution": "Node",
+    "rootDir": "src",
+    "outDir": "../dist",
+    "jsx": "react",
+    "jsxFactory": "React.createElement",
+    "jsxFragmentFactory": "React.Fragment",
+    "noEmitOnError": true
+  },
+  "include": ["src"]
+}

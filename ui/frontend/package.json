@@ -1,0 +1,10 @@
+{
+  "name": "@pulsar/ui",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "../../core/scripts/build-ui.sh",
+    "typecheck": "tsc --noEmit"
+  }
+}

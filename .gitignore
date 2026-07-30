@@ -1,0 +1,7 @@
+core/build/
+core/data/
+ui/frontend/node_modules/
+ui/frontend/.vite/
+ui/frontend/.cache/
+core/config/pulsar.local.env
+.dev-sync/
