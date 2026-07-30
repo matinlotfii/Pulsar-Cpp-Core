@@ -4,4 +4,5 @@ ui/frontend/node_modules/
 ui/frontend/.vite/
 ui/frontend/.cache/
 core/config/pulsar.local.env
+core/config/dev-sync.env
 .dev-sync/

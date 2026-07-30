@@ -94,6 +94,7 @@ cp core/config/dev-sync.env.example core/config/dev-sync.env
 ```
 
 - `sync-bootstrap` روی سرور مقصد پوشه‌ی پروژه را می‌سازد، آن را به یک repo قابل `git push` تبدیل می‌کند و `origin` محلی را تنظیم می‌کند.
+- `sync-bootstrap` روی سرور مقصد یک repo `bare` جدا برای `git push` می‌سازد و `origin` محلی را به آن وصل می‌کند؛ mirror لحظه‌ای همچنان داخل `SYNC_REMOTE_DIR` انجام می‌شود.
 - `sync-start` یک user service می‌سازد که تغییرات این پوشه را با `rsync` از طریق `ssh` روی سرور mirror می‌کند.
 - برای توقف سرویس:
 
