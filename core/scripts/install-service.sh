@@ -11,8 +11,7 @@ unit=/etc/systemd/system/pulsar-kiosk.service
 cat >"$unit" <<UNIT
 [Unit]
 Description=Pulsar Exoscope C++ Kiosk
-After=network-online.target systemd-user-sessions.service
-Wants=network-online.target
+After=systemd-user-sessions.service
 Conflicts=display-manager.service getty@tty1.service
 
 [Service]
@@ -20,7 +19,7 @@ Type=simple
 Environment=PULSAR_RUN_USER=$run_user
 WorkingDirectory=$PULSAR_ROOT
 ExecStart=/usr/bin/xinit $PULSAR_ROOT/core/scripts/xsession.sh -- :0 vt1 -keeptty -nolisten tcp
-Restart=always
+Restart=on-failure
 RestartSec=2
 StandardInput=tty
 StandardOutput=journal
@@ -35,6 +34,7 @@ WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
 systemctl enable pulsar-kiosk.service
+"$PULSAR_ROOT/core/scripts/configure-network-boot.sh" || true
 if systemctl is-enabled --quiet display-manager.service 2>/dev/null; then
   systemctl disable --now display-manager.service || true
 fi

@@ -120,6 +120,10 @@ cp core/config/dev-sync.env.example core/config/dev-sync.env
 
 تنظیمات پیش‌فرض در `core/config/pulsar.env` است. تغییرات مخصوص هر دستگاه را فقط در `core/config/pulsar.local.env` قرار دهید؛ از جمله FPS، کیفیت JPEG، اندازه‌ی پردازش، شماره‌سریال دوربین و override نمایشگر.
 
+برای touch، در صورت نیاز می‌توانید نام دستگاه را با `PULSAR_TOUCH_DEVICE_NAME` قفل کنید و برای ریزتنظیم auto-calibration از `PULSAR_TOUCH_INSET_LEFT/RIGHT/TOP/BOTTOM` استفاده کنید.
+
+اگر touch اصلاً در X11 دیده نشود، فایل `core/data/touch.log` را بررسی کنید. اگر `lsusb` دستگاه را با شناسه‌ی `4348:55e0` نشان دهد، کنترلر WCH در حالت bootloader/ISP است و تا زمان restore شدن firmware، mapping و calibration نرم‌افزاری عمل نخواهند کرد.
+
 ## مسیر ضبط
 
 ویدئوها و Snapshotها در `core/data/recordings/` ذخیره می‌شوند. ضبط با C++ مدیریت و تصویر خام SBS از طریق pipe مستقیم به FFmpeg داده می‌شود؛ Python یا سرور جداگانه‌ای در مسیر تصویر وجود ندارد.

@@ -23,8 +23,18 @@ CameraControls sanitize(CameraControls value) {
 }
 
 DisplayControls sanitize(DisplayControls value) {
+  if (value.mainDisplayMode != "2D" && value.mainDisplayMode != "3D") {
+    value.mainDisplayMode = "3D";
+  }
   value.gapPx = std::clamp(value.gapPx, 0, 200);
+  value.stereoAlignX = std::clamp(value.stereoAlignX, -4096.0, 4096.0);
+  value.stereoAlignY = std::clamp(value.stereoAlignY, -4096.0, 4096.0);
+  value.stereoAlignXRatio = std::clamp(value.stereoAlignXRatio, -0.35, 0.35);
+  value.stereoAlignYRatio = std::clamp(value.stereoAlignYRatio, -0.35, 0.35);
   value.targetFps = std::clamp(value.targetFps, 24, 120);
+  if (value.stereoMode == "Line Interleaved") {
+    value.stereoMode = "LineInterleaved";
+  }
   if (value.stereoMode != "SBS" && value.stereoMode != "LineInterleaved") {
     value.stereoMode = "SBS";
   }

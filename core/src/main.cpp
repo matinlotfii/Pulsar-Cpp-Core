@@ -25,6 +25,15 @@ int main(int argc, char** argv) {
   std::filesystem::create_directories(config.dataRoot);
 
   pulsar::core::AppState state;
+  pulsar::core::CameraControls defaultCamera = state.camera(0);
+  defaultCamera.brightness = config.cameraBrightness;
+  defaultCamera.exposureUs = config.cameraExposureUs;
+  defaultCamera.gainDb = config.cameraGainDb;
+  defaultCamera.autoExposure = config.cameraAutoExposure;
+  defaultCamera.whiteBalance = config.cameraWhiteBalance;
+  defaultCamera.enhance = config.cameraEnhance;
+  state.updateCamera(0, defaultCamera);
+  state.updateCamera(1, defaultCamera);
   pulsar::core::ResourceMonitor monitor(state);
   pulsar::camera::CameraManager cameras(state, config);
   pulsar::camera::Recorder recorder(cameras, state, config.dataRoot);

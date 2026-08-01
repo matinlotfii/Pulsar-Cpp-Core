@@ -11,21 +11,27 @@ struct CameraControls {
   double zoom = 1.0;
   int focus = 0;
   int brightness = 60;
-  double exposureUs = 8000.0;
-  double gainDb = 0.0;
-  bool autoExposure = true;
-  std::string whiteBalance = "Auto";
-  std::string enhance = "Medium";
+  double exposureUs = 29000.0;
+  double gainDb = 6.0;
+  bool autoExposure = false;
+  std::string whiteBalance = "Manual";
+  std::string enhance = "Low";
   int rotation = 0;
   bool frozen = false;
 };
 
 struct DisplayControls {
+  std::string mainDisplayMode = "3D";
   bool swapEyes = false;
   int gapPx = 0;
   bool mirrorLeft = false;
   bool mirrorRight = false;
   std::string stereoMode = "SBS";
+  bool stereoAlignEnabled = false;
+  double stereoAlignX = 0.0;
+  double stereoAlignY = 0.0;
+  double stereoAlignXRatio = 0.0;
+  double stereoAlignYRatio = 0.0;
   int targetFps = 60;
 };
 

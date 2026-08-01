@@ -39,9 +39,11 @@ find_browser() {
 
 wait_for_core() {
   local url="http://${PULSAR_HOST:-127.0.0.1}:${PULSAR_PORT:-4173}/health"
-  for _ in $(seq 1 80); do
+  local attempts="${PULSAR_CORE_READY_ATTEMPTS:-600}"
+  local delay="${PULSAR_CORE_READY_DELAY:-0.1}"
+  for _ in $(seq 1 "$attempts"); do
     curl -fsS --max-time 1 "$url" >/dev/null 2>&1 && return 0
-    sleep .1
+    sleep "$delay"
   done
   return 1
 }

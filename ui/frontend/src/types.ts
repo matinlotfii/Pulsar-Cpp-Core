@@ -1,59 +1,91 @@
-export type PageId = "home" | "left-camera" | "right-camera" | "stereo-3d" | "display-settings" | "recording" | "robotic-arm" | "pedals" | "system";
-export interface CameraControls {
-    zoom: number;
-    focus: number;
-    brightness: number;
-    exposureUs: number;
-    gainDb: number;
-    autoExposure: boolean;
-    whiteBalance: "Auto" | "Warm" | "Cool" | "Manual";
-    enhance: "Low" | "Medium" | "High";
-    rotation: number;
-    frozen: boolean;
+export type Tone = "blue" | "green" | "orange" | "red" | "violet" | "slate";
+
+export type IconName =
+  | "Activity"
+  | "Aperture"
+  | "AudioWaveform"
+  | "Axis3D"
+  | "BadgeCheck"
+  | "Bluetooth"
+  | "Bot"
+  | "Camera"
+  | "CircleGauge"
+  | "CircleStop"
+  | "Clapperboard"
+  | "Crosshair"
+  | "Disc3"
+  | "Eye"
+  | "Focus"
+  | "Gamepad2"
+  | "Gauge"
+  | "Glasses"
+  | "HardDrive"
+  | "Image"
+  | "Layers3"
+  | "Monitor"
+  | "Move3D"
+  | "Network"
+  | "Power"
+  | "Radar"
+  | "RefreshCcw"
+  | "Route"
+  | "Ruler"
+  | "ScanLine"
+  | "Settings"
+  | "ShieldCheck"
+  | "SlidersHorizontal"
+  | "Sparkles"
+  | "Tablet"
+  | "UploadCloud"
+  | "Usb"
+  | "Users"
+  | "WandSparkles"
+  | "Wifi"
+  | "Wrench";
+
+export interface SceneAction {
+  id: string;
+  label: string;
+  description: string;
+  metric: string;
+  icon: IconName;
+  tone: Tone;
 }
-export interface CameraState {
-    index: number;
-    online: boolean;
-    label: string;
-    model: string;
-    serial: string;
-    error: string;
-    fps: number;
-    width: number;
-    height: number;
-    controls: CameraControls;
+
+export interface DeviceCard {
+  id: string;
+  title: string;
+  status: string;
+  detail: string;
+  value: string;
+  icon: IconName;
+  tone: Tone;
+  active: boolean;
 }
-export interface DisplayState {
-    swapEyes: boolean;
-    gapPx: number;
-    mirrorLeft: boolean;
-    mirrorRight: boolean;
-    stereoMode: "SBS" | "LineInterleaved";
-    targetFps: number;
+
+export interface OutputProfile {
+  id: string;
+  endpoint: string;
+  source: string;
+  mode: string;
+  overlays: string;
+  timing: string;
+  icon: IconName;
 }
-export interface RecordingState {
-    active: boolean;
-    lastFile: string;
-    elapsedSeconds: number;
+
+export interface SettingsGroup {
+  id: string;
+  title: string;
+  summary: string;
+  items: string[];
+  icon: IconName;
+  tone: Tone;
 }
-export interface RobotState {
-    motors: number[];
-}
-export interface SystemState {
-    memoryUsedPercent: number;
-    cpuLoad: number;
-    processRssBytes: number;
-    uptimeSeconds: number;
-    version: string;
-}
-export interface PulsarState {
-    revision: number;
-    cameras: [
-        CameraState,
-        CameraState
-    ];
-    display: DisplayState;
-    recording: RecordingState;
-    robot: RobotState;
-    system: SystemState;
+
+export interface DetailPanel {
+  id: string;
+  title: string;
+  subtitle: string;
+  metrics: Array<{ label: string; value: string }>;
+  actions: string[];
 }

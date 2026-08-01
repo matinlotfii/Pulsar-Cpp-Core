@@ -1,8 +1,11 @@
 core/build/
 core/data/
+node_modules/
 ui/frontend/node_modules/
+ui/frontend/dist/
 ui/frontend/.vite/
 ui/frontend/.cache/
 core/config/pulsar.local.env
 core/config/dev-sync.env
 .dev-sync/
+.codex-tmp/

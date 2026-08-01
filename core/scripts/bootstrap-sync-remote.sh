@@ -19,7 +19,7 @@ source "$CONFIG_FILE"
 set +a
 
 REMOTE="${SYNC_REMOTE_USER}@${SYNC_REMOTE_HOST}"
-SSH_OPTS=(-p "$SYNC_REMOTE_PORT" -o BatchMode=yes -o ConnectTimeout=10)
+SSH_OPTS=(-F /dev/null -p "$SYNC_REMOTE_PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=10)
 REMOTE_URL="ssh://${SYNC_REMOTE_USER}@${SYNC_REMOTE_HOST}:${SYNC_REMOTE_PORT}${SYNC_REMOTE_GIT_DIR}"
 
 ssh "${SSH_OPTS[@]}" "$REMOTE" "

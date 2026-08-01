@@ -9,7 +9,8 @@ apt-get update
 apt-get install -y --no-install-recommends \
   build-essential cmake ca-certificates curl libjpeg-dev libsdl2-2.0-0 \
   nodejs node-typescript xserver-xorg-core xserver-xorg-video-all xinit \
-  openbox x11-xserver-utils unclutter ffmpeg usbutils udev
+  xserver-xorg-input-libinput openbox x11-xserver-utils xinput unclutter-xfixes ffmpeg usbutils udev \
+  network-manager iw rfkill policykit-1 inotify-tools
 
 if ! find_browser >/dev/null 2>&1; then
   log "No kiosk browser found; installing Google Chrome Stable."
@@ -32,4 +33,5 @@ cat >/etc/security/limits.d/90-pulsar-camera.conf <<'LIMITS'
 LIMITS
 udevadm control --reload-rules || true
 udevadm trigger --subsystem-match=usb || true
+"$PULSAR_ROOT/core/scripts/configure-network-boot.sh" || true
 log "Dependencies installed. No desktop environment or Python package was installed."

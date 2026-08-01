@@ -1,5 +1,0 @@
-/* Right camera keeps the shared camera controls visually identical while allowing isolated future changes. */
-.camera-page-grid .camera-controls {
-  scrollbar-width:thin;
-  scrollbar-color:rgba(85,197,247,.35) transparent
-}
