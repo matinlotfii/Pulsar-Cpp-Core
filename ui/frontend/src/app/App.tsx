@@ -2,10 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { HmiHeader } from "./chrome";
 import { defaultStereoAutoAlign, requestStereoAutoAlign } from "./camera-stream";
 import { renderDesignedPage, type HmiHandlers } from "./exact-screens";
-import { lightTapFeedback } from "./feedback";
+import { installGlobalButtonFeedback, lightTapFeedback, playStartupFeedback, primeUiAudio, setUiFeedbackEnabled } from "./feedback";
 import { useWifiManager } from "./hooks/use-wifi-manager";
 import {
-  audioSources,
   defaultPedalMap,
   displayDefaults,
   enhanceModes,
@@ -16,6 +15,7 @@ import {
   stereoRotations,
   whiteBalanceModes,
   type CameraControlState,
+  type DisplayPortRole,
   type ExactPageId,
   type HmiControlState,
   type StereoMode,
@@ -27,10 +27,56 @@ interface BackendStatePayload {
   cameras?: Array<{
     controls?: Partial<CameraControlState>;
   }>;
+  outputs?: Array<{
+    id?: keyof typeof displayDefaults;
+    label?: string;
+    connector?: string;
+    connected?: boolean;
+    mode?: "2D" | "3D";
+    volume?: number;
+    muted?: boolean;
+    buttonSoundEnabled?: boolean;
+    sink?: string;
+  }>;
   display?: {
     mainDisplayMode?: "2D" | "3D";
     stereoMode?: "SBS" | "LineInterleaved" | "Line Interleaved";
     swapEyes?: boolean;
+  };
+  displayPorts?: Array<{
+    connector?: string;
+    connected?: boolean;
+    primary?: boolean;
+    role?: DisplayPortRole;
+    resolution?: string;
+    position?: string;
+    refreshRate?: string;
+    summary?: string;
+  }>;
+  system?: {
+    memoryUsedPercent?: number;
+    cpuLoad?: number;
+    processRssBytes?: number;
+    uptimeSeconds?: number;
+    version?: string;
+  };
+  systemDetails?: {
+    storageFreeBytes?: number;
+    storageTotalBytes?: number;
+    storageUsedPercent?: number;
+    storageMount?: string;
+    updateStatus?: string;
+    temperatureC?: number;
+    fanRpm?: number;
+    fanMode?: string;
+    logLines?: number;
+    connectedPortCount?: number;
+    totalPortCount?: number;
+    restartPending?: boolean;
+    aboutProduct?: string;
+    aboutCompany?: string;
+    aboutWebsite?: string;
+    aboutSummary?: string;
   };
 }
 
@@ -88,6 +134,17 @@ function AppRoot() {
   }, [page.label]);
 
   useEffect(() => {
+    primeUiAudio();
+    playStartupFeedback();
+    return installGlobalButtonFeedback();
+  }, []);
+
+  useEffect(() => {
+    const selectedDisplay = hmiState.displays[hmiState.activeDisplay];
+    setUiFeedbackEnabled(selectedDisplay?.muted !== true);
+  }, [hmiState.activeDisplay, hmiState.displays]);
+
+  useEffect(() => {
     let alive = true;
     const syncAutoAlign = async () => {
       try {
@@ -115,7 +172,12 @@ function AppRoot() {
       }
     };
     void loadBackendState();
-  }, []);
+    const refreshMs = activePage === "system" || activePage === "display-settings" ? 2000 : 6000;
+    const timer = window.setInterval(loadBackendState, refreshMs);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [activePage]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -178,13 +240,25 @@ function AppRoot() {
 
   function applyBackendState(payload: BackendStatePayload) {
     setHmiState((current) => {
-      const mainDisplayMode = payload.display?.mainDisplayMode === "2D" ? "2D" : "3D";
-      const nonTouchDisplays = Object.fromEntries(
-        Object.entries(current.displays).map(([id, display]) => [
-          id,
-          id === "touch-lcd" ? display : { ...display, mode: mainDisplayMode }
-        ])
-      ) as typeof displayDefaults;
+      const nextDisplays = { ...current.displays };
+      for (const [id, display] of Object.entries(nextDisplays) as Array<[keyof typeof displayDefaults, typeof displayDefaults[keyof typeof displayDefaults]]>) {
+        nextDisplays[id] = { ...display, connected: false, active: false };
+      }
+      for (const output of payload.outputs ?? []) {
+        if (!output.id || !(output.id in nextDisplays)) continue;
+        const currentDisplay = nextDisplays[output.id];
+        nextDisplays[output.id] = {
+          ...currentDisplay,
+          label: typeof output.label === "string" ? output.label : currentDisplay.label,
+          connector: typeof output.connector === "string" ? output.connector : currentDisplay.connector,
+          connected: output.connected === true,
+          mode: output.mode === "2D" ? "2D" : "3D",
+          volume: typeof output.volume === "number" ? clamp(output.volume, 0, 125) : currentDisplay.volume,
+          muted: typeof output.muted === "boolean" ? output.muted : currentDisplay.muted,
+          buttonSoundEnabled: typeof output.buttonSoundEnabled === "boolean" ? output.buttonSoundEnabled : currentDisplay.buttonSoundEnabled,
+          active: output.connected === true
+        };
+      }
 
       const cameras = current.cameras.map((camera, index) => {
         const controls = payload.cameras?.[index]?.controls;
@@ -201,12 +275,59 @@ function AppRoot() {
         };
       }) as [CameraControlState, CameraControlState];
 
+      const fallbackDisplay = (Object.values(nextDisplays).find((display) => display.connected)?.id ?? current.activeDisplay);
+      const displayPorts = (payload.displayPorts ?? []).map((port) => {
+        const role: DisplayPortRole =
+          port.role === "ui" ||
+          port.role === "display" ||
+          port.role === "ar-glass-1" ||
+          port.role === "ar-glass-2" ||
+          port.role === "ar-glass-3"
+            ? port.role
+            : "none";
+        return {
+          connector: typeof port.connector === "string" ? port.connector : "",
+          connected: port.connected === true,
+          primary: port.primary === true,
+          role,
+          resolution: typeof port.resolution === "string" ? port.resolution : "",
+          position: typeof port.position === "string" ? port.position : "",
+          refreshRate: typeof port.refreshRate === "string" ? port.refreshRate : "",
+          summary: typeof port.summary === "string" ? port.summary : ""
+        };
+      });
+
       return {
         ...current,
         cameras,
-        displays: nonTouchDisplays,
+        displays: nextDisplays,
+        activeDisplay: nextDisplays[current.activeDisplay].connected ? current.activeDisplay : fallbackDisplay,
         stereoMode: uiStereoModeFromBackend(payload.display?.stereoMode),
-        eyeSwap: typeof payload.display?.swapEyes === "boolean" ? payload.display.swapEyes : current.eyeSwap
+        eyeSwap: typeof payload.display?.swapEyes === "boolean" ? payload.display.swapEyes : current.eyeSwap,
+        displayPorts,
+        systemInfo: {
+          ...current.systemInfo,
+          storageFreeBytes: typeof payload.systemDetails?.storageFreeBytes === "number" ? payload.systemDetails.storageFreeBytes : current.systemInfo.storageFreeBytes,
+          storageTotalBytes: typeof payload.systemDetails?.storageTotalBytes === "number" ? payload.systemDetails.storageTotalBytes : current.systemInfo.storageTotalBytes,
+          storageUsedPercent: typeof payload.systemDetails?.storageUsedPercent === "number" ? payload.systemDetails.storageUsedPercent : current.systemInfo.storageUsedPercent,
+          storageMount: typeof payload.systemDetails?.storageMount === "string" ? payload.systemDetails.storageMount : current.systemInfo.storageMount,
+          updateStatus: typeof payload.systemDetails?.updateStatus === "string" ? payload.systemDetails.updateStatus : current.systemInfo.updateStatus,
+          temperatureC: typeof payload.systemDetails?.temperatureC === "number" ? payload.systemDetails.temperatureC : current.systemInfo.temperatureC,
+          fanRpm: typeof payload.systemDetails?.fanRpm === "number" ? payload.systemDetails.fanRpm : current.systemInfo.fanRpm,
+          fanMode: typeof payload.systemDetails?.fanMode === "string" ? payload.systemDetails.fanMode : current.systemInfo.fanMode,
+          logLines: typeof payload.systemDetails?.logLines === "number" ? payload.systemDetails.logLines : current.systemInfo.logLines,
+          connectedPortCount: typeof payload.systemDetails?.connectedPortCount === "number" ? payload.systemDetails.connectedPortCount : current.systemInfo.connectedPortCount,
+          totalPortCount: typeof payload.systemDetails?.totalPortCount === "number" ? payload.systemDetails.totalPortCount : current.systemInfo.totalPortCount,
+          restartPending: typeof payload.systemDetails?.restartPending === "boolean" ? payload.systemDetails.restartPending : current.systemInfo.restartPending,
+          aboutProduct: typeof payload.systemDetails?.aboutProduct === "string" ? payload.systemDetails.aboutProduct : current.systemInfo.aboutProduct,
+          aboutCompany: typeof payload.systemDetails?.aboutCompany === "string" ? payload.systemDetails.aboutCompany : current.systemInfo.aboutCompany,
+          aboutWebsite: typeof payload.systemDetails?.aboutWebsite === "string" ? payload.systemDetails.aboutWebsite : current.systemInfo.aboutWebsite,
+          aboutSummary: typeof payload.systemDetails?.aboutSummary === "string" ? payload.systemDetails.aboutSummary : current.systemInfo.aboutSummary,
+          uptimeSeconds: typeof payload.system?.uptimeSeconds === "number" ? payload.system.uptimeSeconds : current.systemInfo.uptimeSeconds,
+          cpuLoad: typeof payload.system?.cpuLoad === "number" ? payload.system.cpuLoad : current.systemInfo.cpuLoad,
+          memoryUsedPercent: typeof payload.system?.memoryUsedPercent === "number" ? payload.system.memoryUsedPercent : current.systemInfo.memoryUsedPercent,
+          processRssBytes: typeof payload.system?.processRssBytes === "number" ? payload.system.processRssBytes : current.systemInfo.processRssBytes
+        }
       };
     });
   }
@@ -217,6 +338,21 @@ function AppRoot() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(patch)
+      });
+      const payload = await readJsonResponse(response);
+      if (response.ok && isBackendStatePayload(payload)) {
+        applyBackendState(payload);
+      }
+    } catch {
+    }
+  }
+
+  async function pushDisplayRoutingPatch(connector: string, role: DisplayPortRole) {
+    try {
+      const response = await fetch("/api/system/display-routing", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ connector, role })
       });
       const payload = await readJsonResponse(response);
       if (response.ok && isBackendStatePayload(payload)) {
@@ -317,20 +453,30 @@ function AppRoot() {
     onDisplayMode(id, mode) {
       lightTapFeedback();
       setHmiState((current) => {
-        if (id !== "touch-lcd") {
-          void pushDisplayPatch({ mainDisplayMode: mode });
-        }
+        void pushDisplayPatch({ outputId: id, mode });
         return { ...current, displays: { ...current.displays, [id]: { ...current.displays[id], mode, active: true } }, toast: `${current.displays[id].label}: ${mode}` };
       });
     },
-    onDisplayValue(id, field, value) {
-      setHmiState((current) => ({ ...current, displays: { ...current.displays, [id]: { ...current.displays[id], [field]: clamp(value, 0, 100), active: true } }, toast: `${field} updated` }));
+    onDisplayVolume(id, value) {
+      setHmiState((current) => {
+        void pushDisplayPatch({ outputId: id, volume: clamp(value, 0, 125) });
+        return { ...current, displays: { ...current.displays, [id]: { ...current.displays[id], volume: clamp(value, 0, 125), active: true } }, toast: "Volume updated" };
+      });
     },
-    onAudioSourceCycle() {
+    onDisplayMuteToggle(id) {
       lightTapFeedback();
       setHmiState((current) => {
-        const audioSource = cycleValue(audioSources, current.audioSource);
-        return { ...current, audioSource, toast: `Audio source: ${audioSource}` };
+        const muted = !current.displays[id].muted;
+        void pushDisplayPatch({ outputId: id, muted });
+        return { ...current, displays: { ...current.displays, [id]: { ...current.displays[id], muted, active: true } }, toast: muted ? `${current.displays[id].label} muted` : `${current.displays[id].label} unmuted` };
+      });
+    },
+    onDisplayButtonSoundToggle(id) {
+      lightTapFeedback();
+      setHmiState((current) => {
+        const buttonSoundEnabled = !current.displays[id].buttonSoundEnabled;
+        void pushDisplayPatch({ outputId: id, buttonSoundEnabled });
+        return { ...current, displays: { ...current.displays, [id]: { ...current.displays[id], buttonSoundEnabled, active: true } }, toast: buttonSoundEnabled ? "Button sound on" : "Button sound off" };
       });
     },
     onToggleRecording() {
@@ -384,6 +530,20 @@ function AppRoot() {
         wifi.openSheet();
       }
       setHmiState((current) => ({ ...current, systemPanel: panel, systemChecks: panel === "Diagnostics" ? current.systemChecks + 1 : current.systemChecks, toast: panel === "Diagnostics" ? "Diagnostics complete" : `${panel} opened` }));
+    },
+    onAssignDisplayPort(connector, role) {
+      lightTapFeedback();
+      setHmiState((current) => ({
+        ...current,
+        displayPorts: current.displayPorts.map((port) => {
+          if (port.connector === connector) return { ...port, role };
+          if (role !== "none" && port.role === role) return { ...port, role: "none" };
+          return port;
+        }),
+        systemPanel: "Display Routing",
+        toast: `Routing ${connector} updated`
+      }));
+      void pushDisplayRoutingPatch(connector, role);
     }
   };
 

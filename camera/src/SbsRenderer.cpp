@@ -9,12 +9,14 @@
 #include <cmath>
 #include <cctype>
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <memory>
 #include <pthread.h>
 #include <sched.h>
+#include <sstream>
 #include <string>
 #include <sys/resource.h>
 #include <vector>
@@ -55,6 +57,14 @@ bool envEnabled(const char* name, bool fallback = false) {
          std::strcmp(value, "yes") == 0 || std::strcmp(value, "on") == 0;
 }
 
+int envInt(const char* name, int fallback) {
+  const char* value = std::getenv(name);
+  if (value == nullptr || *value == '\0') return fallback;
+  char* end = nullptr;
+  const long parsed = std::strtol(value, &end, 10);
+  return end != value ? static_cast<int>(parsed) : fallback;
+}
+
 std::string envString(const char* name, const char* fallback) {
   const char* value = std::getenv(name);
   return value == nullptr || *value == '\0' ? std::string{fallback} : std::string{value};
@@ -93,6 +103,16 @@ struct TextureSlot {
   bool uploadedThisLoop = false;
   std::shared_ptr<const Frame> heldFrame;
   GlPboSlot pbo;
+};
+
+struct RenderScratch {
+  std::vector<uint8_t> leftOffline;
+  std::vector<uint8_t> rightOffline;
+  std::vector<uint8_t> leftCrop;
+  std::vector<uint8_t> rightCrop;
+  std::vector<uint8_t> leftScaled;
+  std::vector<uint8_t> rightScaled;
+  std::vector<uint8_t> lineInterleaved;
 };
 
 class GlPboUploader {
@@ -233,6 +253,21 @@ struct StereoPairState {
   std::chrono::steady_clock::time_point lastPromote{};
 };
 
+struct RenderTarget {
+  std::string title;
+  int displayIndex = -1;
+  size_t profileIndex = 0;
+  SDL_Window* window = nullptr;
+  SDL_Renderer* renderer = nullptr;
+  SDL_Rect geometry{};
+  bool fullscreen = true;
+  std::vector<SDL_Rect> panels;
+  GlPboUploader uploader;
+  std::array<TextureSlot, 2> textures{};
+  TextureSlot composite{};
+  RenderScratch scratch;
+};
+
 struct RgbFrameView {
   const uint8_t* rgb = nullptr;
   uint32_t width = 0;
@@ -306,12 +341,42 @@ std::array<CameraStatus, 2> chooseStereoPair(
   return pair.cameras;
 }
 
-bool is2dMode(const core::DisplayControls& display) {
-  return display.mainDisplayMode == "2D";
+std::vector<std::string> splitList(const std::string& value, char delimiter) {
+  std::vector<std::string> items;
+  std::string current;
+  std::istringstream stream(value);
+  while (std::getline(stream, current, delimiter)) {
+    if (!current.empty()) items.push_back(current);
+  }
+  return items;
 }
 
-bool isLineInterleavedMode(const core::DisplayControls& display) {
-  return display.mainDisplayMode == "3D" && display.stereoMode == "LineInterleaved";
+SDL_Rect parseGeometry(const std::string& geometry) {
+  SDL_Rect rect{};
+  int width = 0;
+  int height = 0;
+  int x = 0;
+  int y = 0;
+  if (std::sscanf(geometry.c_str(), "%dx%d+%d+%d", &width, &height, &x, &y) == 4) {
+    rect = {x, y, width, height};
+  }
+  return rect;
+}
+
+std::string outputModeFor(const core::DisplayControls& display, size_t profileIndex) {
+  if (profileIndex < display.outputModes.size()) {
+    const auto& mode = display.outputModes[profileIndex];
+    if (mode == "2D" || mode == "3D") return mode;
+  }
+  return profileIndex == 0 ? display.mainDisplayMode : "3D";
+}
+
+bool is2dMode(const core::DisplayControls& display, size_t profileIndex) {
+  return outputModeFor(display, profileIndex) == "2D";
+}
+
+bool isLineInterleavedMode(const core::DisplayControls& display, size_t profileIndex) {
+  return outputModeFor(display, profileIndex) == "3D" && display.stereoMode == "LineInterleaved";
 }
 
 int chooseDisplay(int requested, const std::string& requestedName) {
@@ -335,6 +400,71 @@ int chooseDisplay(int requested, const std::string& requestedName) {
     }
   }
   return best;
+}
+
+bool initializeRenderTarget(RenderTarget& target, bool pboRequested) {
+  if (target.displayIndex < 0) return false;
+  const bool presentVsyncEnabled = envEnabled("PULSAR_SBS_PRESENT_VSYNC", true);
+  const uint32_t rendererFlags =
+      SDL_RENDERER_ACCELERATED |
+      (presentVsyncEnabled ? SDL_RENDERER_PRESENTVSYNC : 0u);
+
+  SDL_Rect bounds = target.geometry;
+  if (bounds.w <= 0 || bounds.h <= 0) {
+    SDL_GetDisplayBounds(target.displayIndex, &bounds);
+  }
+  target.window = SDL_CreateWindow(
+      target.title.c_str(), bounds.x, bounds.y, bounds.w, bounds.h,
+      SDL_WINDOW_BORDERLESS | SDL_WINDOW_SHOWN | SDL_WINDOW_ALLOW_HIGHDPI);
+  if (!target.window) {
+    std::cerr << target.title << ": SDL window creation failed: " << SDL_GetError() << '\n';
+    return false;
+  }
+
+  if (target.fullscreen) {
+    SDL_SetWindowFullscreen(target.window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+  }
+  target.renderer = SDL_CreateRenderer(target.window, -1, rendererFlags);
+  if (!target.renderer) {
+    target.renderer = SDL_CreateRenderer(target.window, -1, SDL_RENDERER_SOFTWARE);
+  }
+  if (!target.renderer) {
+    std::cerr << target.title << ": SDL renderer creation failed: " << SDL_GetError() << '\n';
+    SDL_DestroyWindow(target.window);
+    target.window = nullptr;
+    return false;
+  }
+
+  SDL_RendererInfo rendererInfo{};
+  if (SDL_GetRendererInfo(target.renderer, &rendererInfo) == 0 &&
+      rendererInfo.name != nullptr) {
+    std::cerr << target.title << ": backend=" << rendererInfo.name
+              << " flags=" << rendererInfo.flags << '\n';
+  }
+
+  if (pboRequested) {
+    std::string pboError;
+    if (target.uploader.initialize(target.renderer, pboError)) {
+      std::cerr << target.title << ": OpenGL PBO upload ready (double-buffered canary)\n";
+    } else {
+      std::cerr << target.title << ": OpenGL PBO unavailable; SDL fallback active: "
+                << pboError << '\n';
+    }
+  }
+
+  return true;
+}
+
+void destroyRenderTarget(RenderTarget& target) {
+  for (auto& slot : target.textures) target.uploader.destroy(slot.pbo);
+  target.uploader.destroy(target.composite.pbo);
+  for (auto& slot : target.textures) {
+    if (slot.texture) SDL_DestroyTexture(slot.texture);
+  }
+  if (target.composite.texture) SDL_DestroyTexture(target.composite.texture);
+  if (target.renderer) SDL_DestroyRenderer(target.renderer);
+  if (target.window) SDL_DestroyWindow(target.window);
+  target = {};
 }
 
 SDL_Texture* makeTexture(SDL_Renderer* renderer, uint32_t width, uint32_t height) {
@@ -536,6 +666,86 @@ void renderTexture(SDL_Renderer* renderer, GlPboUploader* uploader, TextureSlot&
   SDL_RenderCopyEx(renderer, slot.texture, nullptr, &destination, 0.0, nullptr, SDL_FLIP_NONE);
 }
 
+void renderTargetFrame(RenderTarget& target,
+                       const std::array<CameraStatus, 2>& paired,
+                       const core::StateSnapshot& state,
+                       double& uploadMsSum,
+                       double& uploadMsMax,
+                       uint64_t& uploadSamples) {
+  if (target.renderer == nullptr) return;
+
+  GlPboUploader* uploader = target.uploader.active() ? &target.uploader : nullptr;
+  auto& scratch = target.scratch;
+  auto& textures = target.textures;
+  auto& composite = target.composite;
+
+  for (auto& slot : textures) {
+    slot.uploadedThisLoop = false;
+    slot.lastUploadMs = 0.0;
+  }
+  composite.uploadedThisLoop = false;
+  composite.lastUploadMs = 0.0;
+
+  int width = 0;
+  int height = 0;
+  SDL_GetRendererOutputSize(target.renderer, &width, &height);
+  const std::vector<SDL_Rect> panels =
+      target.panels.empty() ? std::vector<SDL_Rect>{{0, 0, width, height}} : target.panels;
+
+  SDL_SetRenderDrawColor(target.renderer, 0, 0, 0, 255);
+  SDL_RenderClear(target.renderer);
+
+  for (const SDL_Rect& panel : panels) {
+    const int gap = std::clamp(state.display.gapPx, 0, std::max(0, panel.w / 4));
+    const int halfWidth = std::max(1, (panel.w - gap) / 2);
+    std::array<SDL_Rect, 2> destinations{{
+        {panel.x, panel.y, halfWidth, panel.h},
+        {panel.x + halfWidth + gap, panel.y, panel.w - halfWidth - gap, panel.h},
+    }};
+    std::array<size_t, 2> sourceIndex{{0, 1}};
+    if (state.display.swapEyes) std::swap(sourceIndex[0], sourceIndex[1]);
+
+    if (is2dMode(state.display, target.profileIndex)) {
+      const size_t cameraIndex = state.display.swapEyes ? 1u : 0u;
+      const bool mirror = cameraIndex == 0 ? state.display.mirrorLeft : state.display.mirrorRight;
+      const auto [alignXRatio, alignYRatio] = stereoAlignRatios(state.display, cameraIndex);
+      renderFrame(target.renderer, uploader, textures[cameraIndex], paired[cameraIndex],
+                  state.cameras[cameraIndex], panel, mirror,
+                  static_cast<uint8_t>(cameraIndex * 23u), alignXRatio, alignYRatio);
+    } else if (isLineInterleavedMode(state.display, target.profileIndex)) {
+      composeLineInterleaved(textures[0], textures[1], paired, state.cameras, state.display,
+                             static_cast<uint32_t>(panel.w), static_cast<uint32_t>(panel.h),
+                             scratch.lineInterleaved, scratch.leftOffline, scratch.rightOffline,
+                             scratch.leftCrop, scratch.rightCrop, scratch.leftScaled,
+                             scratch.rightScaled);
+      renderTexture(target.renderer, uploader, composite, scratch.lineInterleaved,
+                    static_cast<uint32_t>(panel.w), static_cast<uint32_t>(panel.h), panel);
+    } else {
+      for (size_t side = 0; side < 2; ++side) {
+        const size_t cameraIndex = sourceIndex[side];
+        const bool mirror = cameraIndex == 0 ? state.display.mirrorLeft : state.display.mirrorRight;
+        const auto [alignXRatio, alignYRatio] = stereoAlignRatios(state.display, cameraIndex);
+        renderFrame(target.renderer, uploader, textures[cameraIndex], paired[cameraIndex],
+                    state.cameras[cameraIndex], destinations[side], mirror,
+                    static_cast<uint8_t>(cameraIndex * 23u), alignXRatio, alignYRatio);
+      }
+    }
+  }
+
+  for (const auto& slot : textures) {
+    if (slot.uploadedThisLoop) {
+      uploadMsSum += slot.lastUploadMs;
+      uploadMsMax = std::max(uploadMsMax, slot.lastUploadMs);
+      ++uploadSamples;
+    }
+  }
+  if (composite.uploadedThisLoop) {
+    uploadMsSum += composite.lastUploadMs;
+    uploadMsMax = std::max(uploadMsMax, composite.lastUploadMs);
+    ++uploadSamples;
+  }
+}
+
 }  // namespace
 
 SbsRenderer::SbsRenderer(CameraManager& cameras, core::AppState& state, const core::Config& config)
@@ -566,62 +776,51 @@ void SbsRenderer::loop() {
     running_ = false;
     return;
   }
-  displayIndex_ = chooseDisplay(config_.mainDisplayIndex, config_.mainDisplayName);
-  if (displayIndex_ < 0) {
+  RenderTarget mainTarget;
+  mainTarget.title = "Pulsar SBS Display";
+  mainTarget.profileIndex = 0;
+  mainTarget.displayIndex = chooseDisplay(config_.mainDisplayIndex, config_.mainDisplayName);
+  if (mainTarget.displayIndex < 0) {
     std::cerr << "No SDL display was found for the SBS renderer.\n";
     SDL_QuitSubSystem(SDL_INIT_VIDEO);
     running_ = false;
     return;
   }
-  SDL_Rect bounds{};
-  SDL_GetDisplayBounds(displayIndex_, &bounds);
-  SDL_Window* window = SDL_CreateWindow("Pulsar SBS", bounds.x, bounds.y, bounds.w, bounds.h,
-      SDL_WINDOW_BORDERLESS | SDL_WINDOW_SHOWN | SDL_WINDOW_ALLOW_HIGHDPI);
-  if (!window) {
-    std::cerr << "SDL window creation failed: " << SDL_GetError() << '\n';
-    SDL_QuitSubSystem(SDL_INIT_VIDEO);
-    running_ = false;
-    return;
-  }
-  SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
-  SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-  if (!renderer) renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
-  if (!renderer) {
-    std::cerr << "SDL renderer creation failed: " << SDL_GetError() << '\n';
-    SDL_DestroyWindow(window);
+  displayIndex_ = mainTarget.displayIndex;
+  if (!initializeRenderTarget(mainTarget, pboRequested)) {
     SDL_QuitSubSystem(SDL_INIT_VIDEO);
     running_ = false;
     return;
   }
 
-  SDL_RendererInfo rendererInfo{};
-  if (SDL_GetRendererInfo(renderer, &rendererInfo) == 0 && rendererInfo.name != nullptr) {
-    std::cerr << "SBS Renderer: backend=" << rendererInfo.name
-              << " flags=" << rendererInfo.flags << '\n';
-  }
-
-  GlPboUploader pboUploader;
-  if (pboRequested) {
-    std::string pboError;
-    if (pboUploader.initialize(renderer, pboError)) {
-      std::cerr << "SBS Renderer: OpenGL PBO upload ready (double-buffered canary)\n";
-    } else {
-      std::cerr << "SBS Renderer: OpenGL PBO unavailable; SDL fallback active: "
-                << pboError << '\n';
+  std::vector<RenderTarget> auxTargets;
+  const auto auxOutputs = splitList(envString("PULSAR_AUX_OUTPUTS", ""), ',');
+  const auto auxGeometries = splitList(envString("PULSAR_AUX_GEOMETRIES", ""), ';');
+  for (size_t i = 0; i < auxOutputs.size() && i < 3; ++i) {
+    if (auxOutputs[i].empty() || auxOutputs[i] == config_.mainDisplayName) continue;
+    RenderTarget auxTarget;
+    auxTarget.title = "Pulsar SBS AR " + std::to_string(i + 1);
+    auxTarget.profileIndex = std::min<size_t>(i + 1, 3);
+    auxTarget.displayIndex = chooseDisplay(-1, auxOutputs[i]);
+    if (i < auxGeometries.size()) {
+      auxTarget.geometry = parseGeometry(auxGeometries[i]);
+      if (auxTarget.geometry.w > 0 && auxTarget.geometry.h > 0) {
+        auxTarget.fullscreen = false;
+      }
+    }
+    if (auxTarget.displayIndex >= 0 && auxTarget.displayIndex != mainTarget.displayIndex) {
+      if (!initializeRenderTarget(auxTarget, pboRequested)) {
+        destroyRenderTarget(mainTarget);
+        for (auto& target : auxTargets) destroyRenderTarget(target);
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
+        running_ = false;
+        return;
+      }
+      auxTargets.push_back(std::move(auxTarget));
     }
   }
-  GlPboUploader* uploader = pboUploader.active() ? &pboUploader : nullptr;
 
-  std::array<TextureSlot, 2> textures{};
-  TextureSlot composite{};
   StereoPairState stereoPair{};
-  std::vector<uint8_t> leftOffline;
-  std::vector<uint8_t> rightOffline;
-  std::vector<uint8_t> leftCrop;
-  std::vector<uint8_t> rightCrop;
-  std::vector<uint8_t> leftScaled;
-  std::vector<uint8_t> rightScaled;
-  std::vector<uint8_t> lineInterleaved;
 
   uint64_t reportLoops = 0;
   uint64_t ageSamples = 0;
@@ -640,46 +839,14 @@ void SbsRenderer::loop() {
   auto reportStart = std::chrono::steady_clock::now();
 
   while (running_) {
-    for (auto& slot : textures) {
-      slot.uploadedThisLoop = false;
-      slot.lastUploadMs = 0.0;
-    }
-    composite.uploadedThisLoop = false;
-    composite.lastUploadMs = 0.0;
-    int width = 0, height = 0;
-    SDL_GetRendererOutputSize(renderer, &width, &height);
     const auto state = state_.snapshot();
     const std::array<CameraStatus, 2> latest{{cameras_.snapshot(0), cameras_.snapshot(1)}};
     const auto paired = chooseStereoPair(stereoPair, latest, pairingMode);
-    const int gap = std::clamp(state.display.gapPx, 0, std::max(0, width / 4));
-    const int halfWidth = std::max(1, (width - gap) / 2);
-    std::array<SDL_Rect, 2> destinations{{{0, 0, halfWidth, height}, {halfWidth + gap, 0, width - halfWidth - gap, height}}};
-    std::array<size_t, 2> sourceIndex{{0, 1}};
-    if (state.display.swapEyes) std::swap(sourceIndex[0], sourceIndex[1]);
-
-    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-    SDL_RenderClear(renderer);
-    if (is2dMode(state.display)) {
-      const size_t cameraIndex = state.display.swapEyes ? 1u : 0u;
-      const bool mirror = cameraIndex == 0 ? state.display.mirrorLeft : state.display.mirrorRight;
-      const auto [alignXRatio, alignYRatio] = stereoAlignRatios(state.display, cameraIndex);
-      renderFrame(renderer, uploader, textures[cameraIndex], paired[cameraIndex], state.cameras[cameraIndex],
-                  SDL_Rect{0, 0, width, height}, mirror, static_cast<uint8_t>(cameraIndex * 23u), alignXRatio, alignYRatio);
-    } else if (isLineInterleavedMode(state.display)) {
-      composeLineInterleaved(textures[0], textures[1], paired, state.cameras, state.display,
-                             static_cast<uint32_t>(width), static_cast<uint32_t>(height),
-                             lineInterleaved, leftOffline, rightOffline, leftCrop, rightCrop, leftScaled, rightScaled);
-      renderTexture(renderer, uploader, composite, lineInterleaved, static_cast<uint32_t>(width), static_cast<uint32_t>(height),
-                    SDL_Rect{0, 0, width, height});
-    } else {
-      for (size_t side = 0; side < 2; ++side) {
-        const size_t cameraIndex = sourceIndex[side];
-        const bool mirror = cameraIndex == 0 ? state.display.mirrorLeft : state.display.mirrorRight;
-        const auto [alignXRatio, alignYRatio] = stereoAlignRatios(state.display, cameraIndex);
-        renderFrame(renderer, uploader, textures[cameraIndex], paired[cameraIndex], state.cameras[cameraIndex],
-                    destinations[side], mirror, static_cast<uint8_t>(cameraIndex * 23u), alignXRatio, alignYRatio);
-      }
+    renderTargetFrame(mainTarget, paired, state, uploadMsSum, uploadMsMax, uploadSamples);
+    for (auto& target : auxTargets) {
+      renderTargetFrame(target, paired, state, uploadMsSum, uploadMsMax, uploadSamples);
     }
+
     const uint64_t ageNowNs = nowNs();
     if (paired[0].frame && paired[1].frame) {
       const uint64_t leftDequeueNs = hostDequeueTimestamp(paired[0]);
@@ -716,21 +883,11 @@ void SbsRenderer::loop() {
       ++heldPairLoops;
     }
 
-    for (const auto& slot : textures) {
-      if (slot.uploadedThisLoop) {
-        uploadMsSum += slot.lastUploadMs;
-        uploadMsMax = std::max(uploadMsMax, slot.lastUploadMs);
-        ++uploadSamples;
-      }
-    }
-    if (composite.uploadedThisLoop) {
-      uploadMsSum += composite.lastUploadMs;
-      uploadMsMax = std::max(uploadMsMax, composite.lastUploadMs);
-      ++uploadSamples;
-    }
-
     const auto presentStart = std::chrono::steady_clock::now();
-    SDL_RenderPresent(renderer);
+    SDL_RenderPresent(mainTarget.renderer);
+    for (auto& target : auxTargets) {
+      if (target.renderer != nullptr) SDL_RenderPresent(target.renderer);
+    }
     const auto presentEnd = std::chrono::steady_clock::now();
     const double presentMs = milliseconds(presentEnd - presentStart);
     presentMsSum += presentMs;
@@ -756,7 +913,7 @@ void SbsRenderer::loop() {
                 << (cameraFrameIdDeltaSum / frameIdDivisor)
                 << " texture-upload-ms=" << (uploadMsSum / uploadDivisor)
                 << " texture-upload-max-ms=" << uploadMsMax
-                << " upload-path=" << (pboUploader.active() ? "gl-pbo" : "sdl")
+                << " upload-path=" << (mainTarget.uploader.active() ? "gl-pbo" : "sdl")
                 << " present-ms=" << (presentMsSum / loopDivisor)
                 << " present-max-ms=" << presentMsMax
                 << " held-pair-loops=" << heldPairLoops << '\n';
@@ -779,12 +936,8 @@ void SbsRenderer::loop() {
     }
   }
 
-  for (auto& slot : textures) pboUploader.destroy(slot.pbo);
-  pboUploader.destroy(composite.pbo);
-  for (auto& slot : textures) if (slot.texture) SDL_DestroyTexture(slot.texture);
-  if (composite.texture) SDL_DestroyTexture(composite.texture);
-  SDL_DestroyRenderer(renderer);
-  SDL_DestroyWindow(window);
+  for (auto& target : auxTargets) destroyRenderTarget(target);
+  destroyRenderTarget(mainTarget);
   SDL_QuitSubSystem(SDL_INIT_VIDEO);
 }
 

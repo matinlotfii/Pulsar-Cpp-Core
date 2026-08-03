@@ -8,6 +8,9 @@ if [[ -z "$run_user" || "$run_user" == "root" ]]; then
   run_user="${PULSAR_RUN_USER:-root}"
 fi
 unit=/etc/systemd/system/pulsar-kiosk.service
+dropin_dir=/etc/systemd/system/pulsar-kiosk.service.d
+touch_unit=/etc/systemd/system/pulsar-touch-hotplug.service
+touch_rule=/etc/udev/rules.d/99-pulsar-touch-hotplug.rules
 cat >"$unit" <<UNIT
 [Unit]
 Description=Pulsar Exoscope C++ Kiosk
@@ -32,11 +35,43 @@ TTYVTDisallocate=yes
 [Install]
 WantedBy=multi-user.target
 UNIT
+
+cat >"$touch_unit" <<UNIT
+[Unit]
+Description=Pulsar touchscreen hotplug remapper
+After=pulsar-kiosk.service
+
+[Service]
+Type=oneshot
+Environment=PULSAR_ROOT=$PULSAR_ROOT
+ExecStart=$PULSAR_ROOT/core/scripts/touch-hotplug-event.sh
+UNIT
+
+mkdir -p "$dropin_dir"
+cat >"$dropin_dir/90-pulsar-managed.conf" <<DROPIN
+[Unit]
+Wants=nvidia-persistenced.service
+After=systemd-user-sessions.service nvidia-persistenced.service
+
+[Service]
+Environment=PULSAR_ROOT=$PULSAR_ROOT
+ExecStartPre=
+ExecStartPre=$PULSAR_ROOT/core/scripts/pulsar-boot-preflight.sh
+TimeoutStartSec=0
+DROPIN
+
+chmod 0755 "$PULSAR_ROOT/core/scripts/touch-hotplug-event.sh"
+install -m 0644 "$PULSAR_ROOT/core/config/99-pulsar-touch-hotplug.rules" "$touch_rule"
+
 systemctl daemon-reload
 systemctl enable pulsar-kiosk.service
 "$PULSAR_ROOT/core/scripts/configure-network-boot.sh" || true
+udevadm control --reload-rules || true
+udevadm trigger --subsystem-match=usb || true
+udevadm trigger --subsystem-match=input || true
+systemctl start pulsar-touch-hotplug.service || true
 if systemctl is-enabled --quiet display-manager.service 2>/dev/null; then
   systemctl disable --now display-manager.service || true
 fi
 systemctl disable --now getty@tty1.service 2>/dev/null || true
-log "Installed pulsar-kiosk.service for user $run_user."
+log "Installed pulsar-kiosk.service and pulsar-touch-hotplug.service for user $run_user."

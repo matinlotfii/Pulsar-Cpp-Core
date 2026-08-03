@@ -25,10 +25,11 @@ chmod +x run.sh
 
 در Ubuntu Desktop با X11، برنامه در همان نشست گرافیکی اجرا می‌شود. در Ubuntu Server بدون Desktop، یک نشست سبک `Xorg + Openbox` و سرویس `pulsar-kiosk.service` ساخته می‌شود.
 
-## رفتار دو مانیتور
+## رفتار نمایشگرها
 
 - کوچک‌ترین مانیتور: رابط تنظیمات لمسی در Chrome/Chromium kiosk
 - مانیتور دوم/بزرگ‌تر: خروجی Native C++/SDL2 به‌صورت Side-by-Side
+- مانیتور سوم اختیاری: mirror از همان خروجی SBS برای HDMI/AR/aux
 - در صورت هم‌اندازه بودن مانیتورها، دو خروجی جدا انتخاب می‌شوند.
 - در حالت تک‌مانیتور، UI اجرا و خروجی Native SBS غیرفعال می‌شود تا پنجره‌ها روی هم نیفتند.
 
@@ -119,6 +120,22 @@ cp core/config/dev-sync.env.example core/config/dev-sync.env
 ## تنظیمات مهم
 
 تنظیمات پیش‌فرض در `core/config/pulsar.env` است. تغییرات مخصوص هر دستگاه را فقط در `core/config/pulsar.local.env` قرار دهید؛ از جمله FPS، کیفیت JPEG، اندازه‌ی پردازش، شماره‌سریال دوربین و override نمایشگر.
+
+برای layout سه‌نمایشگره می‌توانید این الگو را استفاده کنید:
+
+```bash
+PULSAR_EXPECTED_DISPLAY_COUNT=3
+PULSAR_PREFERRED_SETTINGS_OUTPUT=HDMI-2
+PULSAR_PREFERRED_MAIN_OUTPUT=DP-1-1
+PULSAR_PREFERRED_AR_OUTPUT=HDMI-1-0
+PULSAR_SETTINGS_MODE=1024x600
+PULSAR_MAIN_MODE=1920x1080
+PULSAR_MAIN_RATE=60.00
+PULSAR_AR_MODE=1920x1080
+PULSAR_AR_RATE=60.00
+```
+
+در این حالت `HDMI-2` برای UI، `DP-1-1` برای SBS و `HDMI-1-0` به‌صورت mirror از همان SBS تنظیم می‌شود.
 
 برای touch، در صورت نیاز می‌توانید نام دستگاه را با `PULSAR_TOUCH_DEVICE_NAME` قفل کنید و برای ریزتنظیم auto-calibration از `PULSAR_TOUCH_INSET_LEFT/RIGHT/TOP/BOTTOM` استفاده کنید.
 

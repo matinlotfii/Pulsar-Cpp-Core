@@ -37,6 +37,8 @@ struct Config {
 
   int mainDisplayIndex = -1;
   std::string mainDisplayName;
+  int arDisplayIndex = -1;
+  std::string arDisplayName;
   int settingsDisplayIndex = -1;
 
   int cameraFps = 60;

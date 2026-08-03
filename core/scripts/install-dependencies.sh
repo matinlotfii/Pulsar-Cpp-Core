@@ -10,7 +10,8 @@ apt-get install -y --no-install-recommends \
   build-essential cmake ca-certificates curl libjpeg-dev libsdl2-2.0-0 \
   nodejs node-typescript xserver-xorg-core xserver-xorg-video-all xinit \
   xserver-xorg-input-libinput openbox x11-xserver-utils xinput unclutter-xfixes ffmpeg usbutils udev \
-  network-manager iw rfkill policykit-1 inotify-tools
+  network-manager iw rfkill policykit-1 inotify-tools \
+  pulseaudio pulseaudio-utils alsa-utils libasound2-plugins
 
 if ! find_browser >/dev/null 2>&1; then
   log "No kiosk browser found; installing Google Chrome Stable."

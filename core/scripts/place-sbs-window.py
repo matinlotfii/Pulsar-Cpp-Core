@@ -67,6 +67,7 @@ lib.XCloseDisplay.restype = ctypes.c_int
 
 
 def find_sbs_window(display, root):
+    preferred = []
     found = []
 
     def walk(window):
@@ -74,7 +75,9 @@ def find_sbs_window(display, root):
         if lib.XFetchName(display, window, ctypes.byref(name)) and name.value:
             text = name.value.decode(errors="replace")
             lib.XFree(name)
-            if "Pulsar SBS" in text:
+            if text == "Pulsar SBS Main":
+                preferred.append(window)
+            elif "Pulsar SBS" in text:
                 found.append(window)
 
         root_return = Window()
@@ -99,6 +102,8 @@ def find_sbs_window(display, root):
                 lib.XFree(children)
 
     walk(root)
+    if preferred:
+        return preferred[-1]
     return found[-1] if found else None
 
 

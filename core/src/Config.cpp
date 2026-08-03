@@ -124,6 +124,16 @@ Config loadConfig(int argc, char** argv) {
           "PULSAR_MAIN_OUTPUT",
           config.mainDisplayName);
 
+  config.arDisplayName =
+      envString(
+          "PULSAR_AR_OUTPUT",
+          config.arDisplayName);
+
+  config.arDisplayIndex =
+      envInt(
+          "PULSAR_AR_DISPLAY",
+          config.arDisplayIndex);
+
   config.settingsDisplayIndex =
       envInt(
           "PULSAR_SETTINGS_DISPLAY",

@@ -7,12 +7,14 @@ watch_mode=0
 attempts=1
 interval=2
 bootloader_ids_regex='4348:55e0'
+last_status=""
+last_signature=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --watch)
       watch_mode=1
-      attempts=90
+      attempts=0
       ;;
     --attempts)
       attempts="${2:?missing attempts value}"
@@ -31,9 +33,15 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -f "$PULSAR_DATA_DIR/displays.env" ]] || exit 0
-# shellcheck disable=SC1090
-source "$PULSAR_DATA_DIR/displays.env"
 command -v xinput >/dev/null 2>&1 || exit 0
+
+reload_display_env() {
+  [[ -f "$PULSAR_DATA_DIR/displays.env" ]] || return 1
+  # shellcheck disable=SC1090
+  source "$PULSAR_DATA_DIR/displays.env"
+}
+
+reload_display_env || exit 0
 [[ -n "${PULSAR_SETTINGS_OUTPUT:-}" ]] || exit 0
 
 touch_controller_in_bootloader() {
@@ -50,9 +58,63 @@ find_touch_devices() {
     grep -Ei 'touch|touchscreen|USB2IIC_CTP_CONTROL|wch\.cn|ctp|goodix|elan|eeti|ilitek|wave|hid.*touch' || true
 }
 
+touch_device_fingerprints() {
+  local touch_name touch_id
+  while IFS= read -r touch_name; do
+    [[ -n "$touch_name" ]] || continue
+    touch_id="$(xinput list --id-only "$touch_name" 2>/dev/null || true)"
+    [[ -n "$touch_id" ]] || continue
+    printf '%s:%s\n' "$touch_id" "$touch_name"
+  done < <(find_touch_devices)
+}
+
 output_ready() {
   command -v xrandr >/dev/null 2>&1 || return 0
   xrandr --query 2>/dev/null | awk -v output="$PULSAR_SETTINGS_OUTPUT" '$1 == output && $2 == "connected" { found = 1 } END { exit found ? 0 : 1 }'
+}
+
+current_touch_signature() {
+  local bootloader_state output_state touch_fingerprints matrix
+  if touch_controller_in_bootloader; then
+    bootloader_state="bootloader"
+  else
+    bootloader_state="normal"
+  fi
+  if output_ready; then
+    output_state="${PULSAR_SETTINGS_OUTPUT:-unset}"
+  else
+    output_state="output-unavailable"
+  fi
+  touch_fingerprints="$(touch_device_fingerprints | paste -sd, -)"
+  matrix="$(output_matrix 2>/dev/null || true)"
+  printf '%s|%s|%s|%s\n' \
+    "$bootloader_state" \
+    "$output_state" \
+    "${touch_fingerprints:-no-touch-device}" \
+    "${matrix:-no-matrix}"
+}
+
+log_status_once() {
+  local status="$1"
+  local signature="$2"
+  if [[ "$status" != "$last_status" || "$signature" != "$last_signature" ]]; then
+    case "$status" in
+      bootloader)
+        warn "Touch controller is still in WCH bootloader mode (${bootloader_ids_regex}); waiting for the real touchscreen device to re-enumerate."
+        ;;
+      no-output)
+        warn "Settings output '$PULSAR_SETTINGS_OUTPUT' is not connected yet; touch mapping is waiting."
+        ;;
+      no-device)
+        warn "No X11 touch device is currently visible; touch remapper is still watching."
+        ;;
+      mapped)
+        log "Touch mapping is active on output '$PULSAR_SETTINGS_OUTPUT'."
+        ;;
+    esac
+    last_status="$status"
+    last_signature="$signature"
+  fi
 }
 
 xinput_set_identity_matrix() {
@@ -144,24 +206,42 @@ map_touch_devices() {
 }
 
 run_once() {
+  local signature
+  reload_display_env || return 1
   if touch_controller_in_bootloader; then
-    warn "Touch controller detected in WCH bootloader mode (${bootloader_ids_regex}). Restore its firmware first; X11 touch mapping cannot work until the device re-enumerates as a touchscreen."
+    signature="$(current_touch_signature)"
+    log_status_once "bootloader" "$signature"
+    return 2
+  fi
+  if ! output_ready; then
+    signature="$(current_touch_signature)"
+    log_status_once "no-output" "$signature"
+    return 3
+  fi
+  if ! find_touch_devices | grep -q .; then
+    signature="$(current_touch_signature)"
+    log_status_once "no-device" "$signature"
+    return 4
+  fi
+  signature="$(current_touch_signature)"
+  if [[ "$last_status" == "mapped" && "$signature" == "$last_signature" ]]; then
     return 0
   fi
-  output_ready || return 1
-  if ! find_touch_devices | grep -q .; then
-    warn "No X11 touch device is currently available for output '$PULSAR_SETTINGS_OUTPUT'."
-    return 1
-  fi
   map_touch_devices
+  signature="$(current_touch_signature)"
+  log_status_once "mapped" "$signature"
 }
 
 if [[ "$watch_mode" == "1" ]]; then
-  for _ in $(seq 1 "$attempts"); do
-    run_once && exit 0
+  iteration=0
+  while :; do
+    run_once || true
+    iteration=$((iteration + 1))
+    if ((attempts > 0 && iteration >= attempts)); then
+      exit 0
+    fi
     sleep "$interval"
   done
-  exit 0
 fi
 
 run_once || exit 0

@@ -22,6 +22,10 @@ struct CameraControls {
 
 struct DisplayControls {
   std::string mainDisplayMode = "3D";
+  std::array<std::string, 4> outputModes{"3D", "3D", "3D", "3D"};
+  std::array<int, 4> outputVolumes{125, 125, 125, 125};
+  std::array<bool, 4> outputMuted{false, false, false, false};
+  std::array<bool, 4> outputButtonSounds{true, true, true, true};
   bool swapEyes = false;
   int gapPx = 0;
   bool mirrorLeft = false;

@@ -169,6 +169,45 @@ bool controlsEqual(const core::CameraControls& a, const core::CameraControls& b)
          a.whiteBalance == b.whiteBalance && a.enhance == b.enhance;
 }
 
+void setAcquisitionFrameRateEnabled(GX_DEV_HANDLE device, bool enabled) {
+  if (!setEnumOneOf(device, "AcquisitionFrameRateMode", {enabled ? "On" : "Off"})) {
+    setEnumValue(device, "AcquisitionFrameRateMode", enabled ? 1 : 0);
+  }
+}
+
+void setExposureAutoEnabled(GX_DEV_HANDLE device, bool enabled) {
+  if (enabled) {
+    if (!setEnumOneOf(device, "ExposureAuto", {"Continuous", "Once", "On"})) {
+      setEnumValue(device, "ExposureAuto", 1);
+    }
+    return;
+  }
+
+  if (!setEnumOneOf(device, "ExposureAuto", {"Off"})) {
+    setEnumValue(device, "ExposureAuto", 0);
+  }
+}
+
+void setBalanceWhiteAutoEnabled(GX_DEV_HANDLE device, bool enabled) {
+  if (enabled) {
+    if (!setEnumOneOf(device, "BalanceWhiteAuto", {"Continuous", "Once", "On"})) {
+      setEnumValue(device, "BalanceWhiteAuto", 1);
+    }
+    return;
+  }
+
+  if (!setEnumOneOf(device, "BalanceWhiteAuto", {"Off"})) {
+    setEnumValue(device, "BalanceWhiteAuto", 0);
+  }
+}
+
+void applyLowLatencyAcquisitionSetup(GX_DEV_HANDLE device, int targetFps) {
+  setEnum(device, "AcquisitionMode", "Continuous");
+  setEnum(device, "TriggerMode", "Off");
+  setAcquisitionFrameRateEnabled(device, true);
+  setFloat(device, "AcquisitionFrameRate", static_cast<double>(std::max(targetFps, 1)));
+}
+
 std::string lowerAscii(std::string value) {
   std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
     return static_cast<char>(std::tolower(ch));
@@ -860,59 +899,65 @@ bool CameraDevice::configure() {
     if (setEnumOneOf(device_, "UserSetSelector", {"Default", "UserSet0"})) {
       setCommand(device_, "UserSetLoad");
     }
-    setEnum(device_, "AcquisitionMode", "Continuous");
-    setEnum(device_, "TriggerMode", "Off");
-
-    setEnumValue(device_, "AcquisitionFrameRateMode", 1);
-    setFloat(device_, "AcquisitionFrameRate", 60.0);
-
-    setEnumOneOf(device_, "RegionSelector", {"Region0", "Region1"});
-    setEnum(device_, "RegionMode", "Off");
-
-    GX_INT_VALUE sensorWidthMax{};
-    GX_INT_VALUE sensorHeightMax{};
-    const bool haveSensorWidth = getInt(device_, "WidthMax", sensorWidthMax);
-    const bool haveSensorHeight = getInt(device_, "HeightMax", sensorHeightMax);
-    int sensorScale = std::clamp(sensorScale_, 1, 4);
-    if (haveSensorWidth && haveSensorHeight) {
-      const double widthRatio =
-          static_cast<double>(sensorWidthMax.nCurValue) / std::max(1u, maxWidth_);
-      const double heightRatio =
-          static_cast<double>(sensorHeightMax.nCurValue) / std::max(1u, maxHeight_);
-      const int recommendedScale = std::clamp(
-          static_cast<int>(std::ceil(std::max({1.0, widthRatio, heightRatio}))), 1, 4);
-      sensorScale = std::max(sensorScale, recommendedScale);
-    }
-
-    configuredSensorScale_ = sensorScale;
-    setEnumOneOf(device_, "BinningHorizontalMode", {"Average", "Sum"});
-    setEnumOneOf(device_, "BinningVerticalMode", {"Average", "Sum"});
-    setInt(device_, "BinningHorizontal", sensorScale);
-    setInt(device_, "BinningVertical", sensorScale);
-    setInt(device_, "DecimationHorizontal", 1);
-    setInt(device_, "DecimationVertical", 1);
-    setInt(device_, "SensorDecimationHorizontal", 1);
-    setInt(device_, "SensorDecimationVertical", 1);
-    setBool(device_, "CenterX", false);
-    setBool(device_, "CenterY", false);
-
-    GX_INT_VALUE widthMax{};
-    GX_INT_VALUE heightMax{};
-    if (getInt(device_, "WidthMax", widthMax)) {
-      setInt(device_, "Width", widthMax.nCurValue);
-    }
-    if (getInt(device_, "HeightMax", heightMax)) {
-      setInt(device_, "Height", heightMax.nCurValue);
-    }
-    setInt(device_, "OffsetX", 0);
-    setInt(device_, "OffsetY", 0);
-
-    setInt(device_, "StreamTransferSize", 64 * 1024);
-    setInt(device_, "StreamTransferNumberUrb", 32);
-    setBool(device_, "FrameStoreCoverActive", true);
-    setEnum(device_, "CoverFrameStoreMode", "On");
-    applyControls(controls_(), true);
+    applyLowLatencyAcquisitionSetup(device_, targetFps_);
   }
+
+  // Apply the runtime capture geometry even after a GalaxyView profile import.
+  // The persistence file can restore full 12 MP streaming, which collapses the
+  // live FPS once both cameras are active. The runtime path keeps the profile's
+  // color/pixel-format choices, but reasserts the lightweight sensor setup that
+  // matches the requested render resolution.
+  setEnumOneOf(device_, "RegionSelector", {"Region0", "Region1"});
+  setEnum(device_, "RegionMode", "Off");
+
+  GX_INT_VALUE sensorWidthMax{};
+  GX_INT_VALUE sensorHeightMax{};
+  const bool haveSensorWidth = getInt(device_, "WidthMax", sensorWidthMax);
+  const bool haveSensorHeight = getInt(device_, "HeightMax", sensorHeightMax);
+  int sensorScale = std::clamp(sensorScale_, 1, 4);
+  if (haveSensorWidth && haveSensorHeight) {
+    const double widthRatio =
+        static_cast<double>(sensorWidthMax.nCurValue) / std::max(1u, maxWidth_);
+    const double heightRatio =
+        static_cast<double>(sensorHeightMax.nCurValue) / std::max(1u, maxHeight_);
+    const int recommendedScale = std::clamp(
+        static_cast<int>(std::ceil(std::max({1.0, widthRatio, heightRatio}))), 1, 4);
+    sensorScale = std::max(sensorScale, recommendedScale);
+  }
+
+  configuredSensorScale_ = sensorScale;
+  setEnumOneOf(device_, "BinningHorizontalMode", {"Average", "Sum"});
+  setEnumOneOf(device_, "BinningVerticalMode", {"Average", "Sum"});
+  setInt(device_, "BinningHorizontal", sensorScale);
+  setInt(device_, "BinningVertical", sensorScale);
+  setInt(device_, "DecimationHorizontal", 1);
+  setInt(device_, "DecimationVertical", 1);
+  setInt(device_, "SensorDecimationHorizontal", 1);
+  setInt(device_, "SensorDecimationVertical", 1);
+  setBool(device_, "CenterX", false);
+  setBool(device_, "CenterY", false);
+
+  GX_INT_VALUE widthMax{};
+  GX_INT_VALUE heightMax{};
+  if (getInt(device_, "WidthMax", widthMax)) {
+    setInt(device_, "Width", widthMax.nCurValue);
+  }
+  if (getInt(device_, "HeightMax", heightMax)) {
+    setInt(device_, "Height", heightMax.nCurValue);
+  }
+  setInt(device_, "OffsetX", 0);
+  setInt(device_, "OffsetY", 0);
+
+  setInt(device_, "StreamTransferSize", 64 * 1024);
+  setInt(device_, "StreamTransferNumberUrb", 32);
+  setBool(device_, "FrameStoreCoverActive", true);
+  setEnum(device_, "CoverFrameStoreMode", "On");
+  applyControls(controls_(), true);
+
+  // GalaxyView persistence files may leave the camera in a low-FPS operating
+  // point. Re-apply the live acquisition policy after profile import so the
+  // transport and sensor timing always match the requested low-latency mode.
+  applyLowLatencyAcquisitionSetup(device_, targetFps_);
 
   // Low-latency stream policy. These are host/transport settings only and
   // intentionally override the persistence file's OldestFirst queue policy.
@@ -961,10 +1006,6 @@ void CameraDevice::close() {
 }
 
 void CameraDevice::applyControls(const core::CameraControls& controls, bool force) {
-  // In GalaxyView profile mode, the imported file is the single source of
-  // truth. Do not let AppState/UI defaults overwrite its image settings.
-  if (profileImported_) return;
-
   if (device_ == nullptr ||
       (!force && controlsApplied_ &&
        controlsEqual(controls, appliedControls_))) {
@@ -978,15 +1019,19 @@ void CameraDevice::applyControls(const core::CameraControls& controls, bool forc
   // ExposureMode = Timed
   setEnum(device_, "ExposureMode", "Timed");
 
-  // ExposureAuto = 0
-  setEnumValue(device_, "ExposureAuto", 0);
+  // Keep the sensor in the requested real-time operating point even when a
+  // GalaxyView profile has been imported.
+  applyLowLatencyAcquisitionSetup(device_, targetFps_);
 
-  // Gain must be manual; otherwise Gain = 6 may be overwritten.
+  // ExposureAuto = controls.autoExposure
+  setExposureAutoEnabled(device_, controls.autoExposure);
+
+  // Gain must be manual; otherwise the requested gain may be overwritten.
   setEnum(device_, "GainAuto", "Off");
   setEnumOneOf(device_, "GainSelector", {"AnalogAll", "All"});
 
-  // Gain = 6
-  setFloat(device_, "Gain", 6.0);
+  // Gain = controls.gainDb
+  setFloat(device_, "Gain", controls.gainDb);
 
   // BlackLevel must be manual.
   setEnumValue(device_, "BlackLevelAuto", 0);
@@ -994,8 +1039,10 @@ void CameraDevice::applyControls(const core::CameraControls& controls, bool forc
   // BlackLevel = 1
   setFloat(device_, "BlackLevel", 1.0);
 
-  // ExposureTime = 29000 microseconds
-  setFloat(device_, "ExposureTime", 29000.0);
+  // ExposureTime = controls.exposureUs microseconds
+  if (!controls.autoExposure) {
+    setFloat(device_, "ExposureTime", controls.exposureUs);
+  }
 
   // AutoExposureTimeMin = 8 microseconds
   setFloat(device_, "AutoExposureTimeMin", 8.0);
@@ -1003,11 +1050,17 @@ void CameraDevice::applyControls(const core::CameraControls& controls, bool forc
   // AutoExposureTimeMax = 1000000 microseconds
   setFloat(device_, "AutoExposureTimeMax", 1000000.0);
 
+  if (profileImported_) {
+    appliedControls_ = controls;
+    controlsApplied_ = true;
+    return;
+  }
+
   // LightSourcePreset = 3
   setEnumValue(device_, "LightSourcePreset", 3);
 
   // BalanceWhiteAuto = 0 (Off)
-  setEnumValue(device_, "BalanceWhiteAuto", 0);
+  setBalanceWhiteAutoEnabled(device_, false);
 
   /*
    * BalanceRatio is selector-dependent.
