@@ -72,7 +72,7 @@ run_remote_apply() {
   local remote_script=""
   printf -v remote_script 'cd %q' "$SYNC_REMOTE_DIR"
   if [[ "${SYNC_REMOTE_BUILD_ON_SYNC:-1}" == "1" ]]; then
-    remote_script+=" && ./run.sh build"
+    remote_script+=" && PULSAR_USE_PREBUILT_UI=1 ./run.sh build"
   fi
   if [[ "${SYNC_REMOTE_RESTART_ON_SYNC:-1}" == "1" ]]; then
     printf -v remote_script '%s && sudo -n systemctl restart %q' "$remote_script" "$SYNC_REMOTE_SERVICE"

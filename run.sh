@@ -1,60 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-# PULSAR_NODE_RUNTIME_BEGIN
-# Always select a modern Node.js, including non-interactive run.sh executions.
-pulsar_use_modern_node() {
-  local required_major="${PULSAR_NODE_MIN_MAJOR:-18}"
-  local preferred_version="${PULSAR_NODE_VERSION:-22}"
-  local current_major=0
-
-  if command -v node >/dev/null 2>&1; then
-    current_major="$(
-      node -p 'parseInt(process.versions.node.split(".")[0], 10)' \
-        2>/dev/null || printf '0'
-    )"
-  fi
-
-  if (( current_major < required_major )); then
-    export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
-
-    if [[ -s "$NVM_DIR/nvm.sh" ]]; then
-      # shellcheck disable=SC1090
-      . "$NVM_DIR/nvm.sh"
-
-      if ! nvm use "$preferred_version" >/dev/null 2>&1; then
-        nvm install "$preferred_version" >/dev/null
-        nvm use "$preferred_version" >/dev/null
-      fi
-
-      hash -r
-    fi
-  fi
-
-  if ! command -v node >/dev/null 2>&1; then
-    echo "ERROR: Node.js is not installed." >&2
-    return 1
-  fi
-
-  current_major="$(
-    node -p 'parseInt(process.versions.node.split(".")[0], 10)' \
-      2>/dev/null || printf '0'
-  )"
-
-  if (( current_major < required_major )); then
-    echo "ERROR: Pulsar UI requires Node.js 18 or newer." >&2
-    echo "Active version: $(node --version 2>/dev/null || echo missing)" >&2
-    return 1
-  fi
-}
-pulsar_use_modern_node
-# PULSAR_NODE_RUNTIME_END
-
-
-
-
-
-
 # =============================================================================
 # Pulsar professional runner
 #
@@ -345,6 +290,17 @@ create_run_commit_and_tag() {
   local branch="$4"
 
   echo
+
+# PULSAR_LOCAL_UI_BUILD_BEGIN
+# Source changes are built locally before Git staging and deployment.
+# Remote builds receive PULSAR_USE_PREBUILT_UI=1 and skip frontend compilation.
+if [[ "${PULSAR_USE_PREBUILT_UI:-0}" != "1" ]]; then
+  echo
+  echo "========== LOCAL UI BUILD =========="
+  "$ROOT/core/scripts/build-ui.sh"
+fi
+# PULSAR_LOCAL_UI_BUILD_END
+
   echo "========== STAGE PROJECT CHANGES =========="
   git -C "$ROOT" status --short
   git -C "$ROOT" add -A

@@ -13,3 +13,4 @@ core/config/dev-sync.env
 __pycache__/
 *.pyc
 *.backup
+tree.txt

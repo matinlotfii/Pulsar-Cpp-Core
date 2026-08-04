@@ -1,63 +1,64 @@
 #!/usr/bin/env bash
 set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+FRONTEND="$ROOT/ui/frontend"
+DIST="$ROOT/ui/dist"
+IMPORTED_DIST="$ROOT/ui/vendor/exo-ui-dist"
 
-# PULSAR_NODE_RUNTIME_BEGIN
-# Always select a modern Node.js, including non-interactive run.sh executions.
-pulsar_use_modern_node() {
-  local required_major="${PULSAR_NODE_MIN_MAJOR:-18}"
-  local preferred_version="${PULSAR_NODE_VERSION:-22}"
-  local current_major=0
+# PULSAR_LOCAL_NODE_BEGIN
+# The server receives ui/dist built by the development laptop.
+if [[ "${PULSAR_USE_PREBUILT_UI:-0}" == "1" ]]; then
+  if [[ ! -f "$DIST/index.html" ]]; then
+    echo "ERROR: Prebuilt Pulsar UI is missing: $DIST/index.html" >&2
+    exit 1
+  fi
+
+  echo "[Pulsar] Using prebuilt UI at $DIST"
+  exit 0
+fi
+
+# Local frontend build: use an already-installed modern Node.js.
+pulsar_activate_local_node() {
+  local major=0
 
   if command -v node >/dev/null 2>&1; then
-    current_major="$(
+    major="$(
       node -p 'parseInt(process.versions.node.split(".")[0], 10)' \
         2>/dev/null || printf '0'
     )"
   fi
 
-  if (( current_major < required_major )); then
+  if (( major < 18 )); then
     export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 
     if [[ -s "$NVM_DIR/nvm.sh" ]]; then
       # shellcheck disable=SC1090
       . "$NVM_DIR/nvm.sh"
-
-      if ! nvm use "$preferred_version" >/dev/null 2>&1; then
-        nvm install "$preferred_version" >/dev/null
-        nvm use "$preferred_version" >/dev/null
-      fi
-
+      nvm use 22 >/dev/null 2>&1 || true
       hash -r
     fi
   fi
 
   if ! command -v node >/dev/null 2>&1; then
-    echo "ERROR: Node.js is not installed." >&2
-    return 1
+    echo "ERROR: Node.js روی سیستم محلی پیدا نشد." >&2
+    exit 1
   fi
 
-  current_major="$(
+  major="$(
     node -p 'parseInt(process.versions.node.split(".")[0], 10)' \
       2>/dev/null || printf '0'
   )"
 
-  if (( current_major < required_major )); then
-    echo "ERROR: Pulsar UI requires Node.js 18 or newer." >&2
-    echo "Active version: $(node --version 2>/dev/null || echo missing)" >&2
-    return 1
+  if (( major < 18 )); then
+    echo "ERROR: برای ساخت UI به Node.js 18 یا جدیدتر نیاز است." >&2
+    echo "Active Node: $(node --version 2>/dev/null || echo unavailable)" >&2
+    exit 1
   fi
 }
-pulsar_use_modern_node
-# PULSAR_NODE_RUNTIME_END
 
+pulsar_activate_local_node
+# PULSAR_LOCAL_NODE_END
 
-
-
-
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-FRONTEND="$ROOT/ui/frontend"
-DIST="$ROOT/ui/dist"
-IMPORTED_DIST="$ROOT/ui/vendor/exo-ui-dist"
 
 if [[ -f "$FRONTEND/package.json" && -f "$FRONTEND/vite.config.ts" ]]; then
   (
