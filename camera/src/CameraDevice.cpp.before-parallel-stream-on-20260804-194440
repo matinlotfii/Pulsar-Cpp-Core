@@ -788,17 +788,12 @@ bool CameraDevice::connect() {
         slot_, std::chrono::milliseconds(timeoutMs));
   }
 
-  const bool parallelStreamOn =
-      softwareSync && pairedStart &&
-      envEnabled("PULSAR_PARALLEL_STREAM_ON", false);
-
   const auto streamOnStart = std::chrono::steady_clock::now();
   GX_STATUS streamStatus = GX_STATUS_ERROR;
-  if (parallelStreamOn) {
-    // Both cameras are separate devices and have already passed the shared
-    // start barrier. Discovery, configuration and shutdown remain serialized.
-    streamStatus = GXStreamOn(device_);
-  } else {
+  {
+    // Keep SDK calls serialized for safety. Because both cameras are already
+    // configured and released from the same gate, the two StreamOn calls now
+    // run back-to-back instead of being separated by complete camera/GPU init.
     std::lock_guard<std::mutex> sdkLock(gSdkMutex);
     streamStatus = GXStreamOn(device_);
   }
@@ -814,7 +809,6 @@ bool CameraDevice::connect() {
   std::cerr << label_
             << ": software-start-sync="
             << (softwareSync ? (pairedStart ? "paired" : "fallback") : "off")
-            << " stream-on-mode=" << (parallelStreamOn ? "parallel" : "serialized")
             << " stream-on-call-ms="
             << std::chrono::duration<double, std::milli>(streamOnEnd - streamOnStart).count()
             << " stream-on-host-ns=" << steadyNs(streamOnEnd) << '\n';
