@@ -901,66 +901,71 @@ bool CameraDevice::configure() {
     }
   }
 
+  // PULSAR_REFERENCE_PROFILE_AUTHORITY_V2
+  // The imported GalaxyView file owns all sensor and image parameters.
+  // Runtime controls are allowed only when no profile was imported.
   if (!profileImported_) {
     if (setEnumOneOf(device_, "UserSetSelector", {"Default", "UserSet0"})) {
       setCommand(device_, "UserSetLoad");
     }
     applyLowLatencyAcquisitionSetup(device_, targetFps_);
+
+    setEnumOneOf(device_, "RegionSelector", {"Region0", "Region1"});
+    setEnum(device_, "RegionMode", "Off");
+
+    GX_INT_VALUE sensorWidthMax{};
+    GX_INT_VALUE sensorHeightMax{};
+    const bool haveSensorWidth = getInt(device_, "WidthMax", sensorWidthMax);
+    const bool haveSensorHeight = getInt(device_, "HeightMax", sensorHeightMax);
+    int sensorScale = std::clamp(sensorScale_, 1, 4);
+
+    if (haveSensorWidth && haveSensorHeight) {
+      const double widthRatio =
+          static_cast<double>(sensorWidthMax.nCurValue) / std::max(1u, maxWidth_);
+      const double heightRatio =
+          static_cast<double>(sensorHeightMax.nCurValue) / std::max(1u, maxHeight_);
+      const int recommendedScale = std::clamp(
+          static_cast<int>(std::ceil(std::max({1.0, widthRatio, heightRatio}))),
+          1,
+          4);
+      sensorScale = std::max(sensorScale, recommendedScale);
+    }
+
+    configuredSensorScale_ = sensorScale;
+    setEnumOneOf(device_, "BinningHorizontalMode", {"Average", "Sum"});
+    setEnumOneOf(device_, "BinningVerticalMode", {"Average", "Sum"});
+    setInt(device_, "BinningHorizontal", sensorScale);
+    setInt(device_, "BinningVertical", sensorScale);
+    setInt(device_, "DecimationHorizontal", 1);
+    setInt(device_, "DecimationVertical", 1);
+    setInt(device_, "SensorDecimationHorizontal", 1);
+    setInt(device_, "SensorDecimationVertical", 1);
+    setBool(device_, "CenterX", false);
+    setBool(device_, "CenterY", false);
+
+    GX_INT_VALUE widthMax{};
+    GX_INT_VALUE heightMax{};
+
+    if (getInt(device_, "WidthMax", widthMax)) {
+      setInt(device_, "Width", widthMax.nCurValue);
+    }
+    if (getInt(device_, "HeightMax", heightMax)) {
+      setInt(device_, "Height", heightMax.nCurValue);
+    }
+
+    setInt(device_, "OffsetX", 0);
+    setInt(device_, "OffsetY", 0);
+    applyControls(controls_(), true);
   }
 
-  // Apply the runtime capture geometry even after a GalaxyView profile import.
-  // The persistence file can restore full 12 MP streaming, which collapses the
-  // live FPS once both cameras are active. The runtime path keeps the profile's
-  // color/pixel-format choices, but reasserts the lightweight sensor setup that
-  // matches the requested render resolution.
-  setEnumOneOf(device_, "RegionSelector", {"Region0", "Region1"});
-  setEnum(device_, "RegionMode", "Off");
-
-  GX_INT_VALUE sensorWidthMax{};
-  GX_INT_VALUE sensorHeightMax{};
-  const bool haveSensorWidth = getInt(device_, "WidthMax", sensorWidthMax);
-  const bool haveSensorHeight = getInt(device_, "HeightMax", sensorHeightMax);
-  int sensorScale = std::clamp(sensorScale_, 1, 4);
-  if (haveSensorWidth && haveSensorHeight) {
-    const double widthRatio =
-        static_cast<double>(sensorWidthMax.nCurValue) / std::max(1u, maxWidth_);
-    const double heightRatio =
-        static_cast<double>(sensorHeightMax.nCurValue) / std::max(1u, maxHeight_);
-    const int recommendedScale = std::clamp(
-        static_cast<int>(std::ceil(std::max({1.0, widthRatio, heightRatio}))), 1, 4);
-    sensorScale = std::max(sensorScale, recommendedScale);
-  }
-
-  configuredSensorScale_ = sensorScale;
-  setEnumOneOf(device_, "BinningHorizontalMode", {"Average", "Sum"});
-  setEnumOneOf(device_, "BinningVerticalMode", {"Average", "Sum"});
-  setInt(device_, "BinningHorizontal", sensorScale);
-  setInt(device_, "BinningVertical", sensorScale);
-  setInt(device_, "DecimationHorizontal", 1);
-  setInt(device_, "DecimationVertical", 1);
-  setInt(device_, "SensorDecimationHorizontal", 1);
-  setInt(device_, "SensorDecimationVertical", 1);
-  setBool(device_, "CenterX", false);
-  setBool(device_, "CenterY", false);
-
-  GX_INT_VALUE widthMax{};
-  GX_INT_VALUE heightMax{};
-  if (getInt(device_, "WidthMax", widthMax)) {
-    setInt(device_, "Width", widthMax.nCurValue);
-  }
-  if (getInt(device_, "HeightMax", heightMax)) {
-    setInt(device_, "Height", heightMax.nCurValue);
-  }
-  setInt(device_, "OffsetX", 0);
-  setInt(device_, "OffsetY", 0);
-
-  // PULSAR_STREAM_HANDLE_NEWEST_ONLY_V1
-  // Stream nodes belong to GX_DS_HANDLE. Writing them through the device
-  // handle silently left the SDK in OldestFirst/unchanged mode.
+  // Keep only host-side latency optimizations outside profile authority.
+  // These do not alter exposure, gain, color, LUT, ROI or sensor geometry.
   GX_DS_HANDLE streamHandle = nullptr;
   const bool haveStreamHandle =
-      GXGetDataStreamHandleFromDev(device_, 0, &streamHandle) == GX_STATUS_SUCCESS &&
+      GXGetDataStreamHandleFromDev(device_, 0, &streamHandle) ==
+          GX_STATUS_SUCCESS &&
       streamHandle != nullptr;
+
   GX_PORT_HANDLE streamPort = haveStreamHandle
       ? static_cast<GX_PORT_HANDLE>(streamHandle)
       : static_cast<GX_PORT_HANDLE>(device_);
@@ -969,36 +974,35 @@ bool CameraDevice::configure() {
   setInt(streamPort, "StreamTransferNumberUrb", 64);
   setBool(device_, "FrameStoreCoverActive", true);
   setEnum(device_, "CoverFrameStoreMode", "On");
-  applyControls(controls_(), true);
 
-  // GalaxyView persistence files may leave the camera in a low-FPS operating
-  // point. Re-apply the live acquisition policy after profile import so the
-  // transport and sensor timing always match the requested low-latency mode.
-  applyLowLatencyAcquisitionSetup(device_, targetFps_);
-
-  // Low-latency stream policy. These are host/transport settings only and
-  // intentionally override the persistence file's OldestFirst queue policy.
   const char* streamBufferMode = "unchanged";
+
   if (setEnum(streamPort, "StreamBufferHandlingMode", "NewestOnly")) {
     streamBufferMode = "NewestOnly";
-  } else if (setEnum(streamPort, "StreamBufferHandlingMode", "OldestFirstOverwrite")) {
+  } else if (
+      setEnum(streamPort, "StreamBufferHandlingMode", "OldestFirstOverwrite")) {
     streamBufferMode = "OldestFirstOverwrite";
   }
 
   constexpr uint64_t kAcquisitionBufferCount = 2;
-  if (GXSetAcqusitionBufferNumber(device_, kAcquisitionBufferCount) != GX_STATUS_SUCCESS) {
-    std::cerr << label_ << ": warning: could not set acquisition buffer count\n";
+
+  if (GXSetAcqusitionBufferNumber(device_, kAcquisitionBufferCount) !=
+      GX_STATUS_SUCCESS) {
+    std::cerr << label_
+              << ": warning: could not set acquisition buffer count\n";
   }
+
   std::cerr << label_ << ": low-latency stream-buffer-mode="
             << streamBufferMode << " acquisition-buffers="
             << kAcquisitionBufferCount << '\n';
 
-  // Read the Bayer filter after profile import, because the profile may
-  // change PixelFormat or related color settings.
   colorFilter_ = GX_COLOR_FILTER_NONE;
+
   if (available(device_, "PixelColorFilter")) {
     GX_ENUM_VALUE value{};
-    if (GXGetEnumValue(device_, "PixelColorFilter", &value) == GX_STATUS_SUCCESS) {
+
+    if (GXGetEnumValue(device_, "PixelColorFilter", &value) ==
+        GX_STATUS_SUCCESS) {
       colorFilter_ = value.stCurValue.nCurValue;
     }
   }
@@ -1023,6 +1027,11 @@ void CameraDevice::close() {
 }
 
 void CameraDevice::applyControls(const core::CameraControls& controls, bool force) {
+  // PULSAR_REFERENCE_APPLY_GUARD_V2
+  // The imported profile is the single source of truth for exposure, gain,
+  // black level, white balance, gamma, LUT and sensor geometry.
+  if (profileImported_) return;
+
   if (device_ == nullptr ||
       (!force && controlsApplied_ &&
        controlsEqual(controls, appliedControls_))) {
@@ -1067,11 +1076,6 @@ void CameraDevice::applyControls(const core::CameraControls& controls, bool forc
   // AutoExposureTimeMax = 1000000 microseconds
   setFloat(device_, "AutoExposureTimeMax", 1000000.0);
 
-  if (profileImported_) {
-    appliedControls_ = controls;
-    controlsApplied_ = true;
-    return;
-  }
 
   // LightSourcePreset = 3
   setEnumValue(device_, "LightSourcePreset", 3);
