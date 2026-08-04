@@ -970,8 +970,12 @@ bool CameraDevice::configure() {
       ? static_cast<GX_PORT_HANDLE>(streamHandle)
       : static_cast<GX_PORT_HANDLE>(device_);
 
-  setInt(streamPort, "StreamTransferSize", 256 * 1024);
-  setInt(streamPort, "StreamTransferNumberUrb", 64);
+  // PULSAR_REFERENCE_USB_TRANSPORT_V4
+  // Match the known-good ZIP transport for full 4024x3036 Bayer frames.
+  // These are host/USB stream parameters and do not alter image pixels.
+  setInt(streamPort, "StreamTransferSize", 1024 * 1024);
+  setInt(streamPort, "StreamTransferNumberUrb", 200);
+  setInt(streamPort, "AcquisitionBufferCachePrec", 40);
   setBool(device_, "FrameStoreCoverActive", true);
   setEnum(device_, "CoverFrameStoreMode", "On");
 
