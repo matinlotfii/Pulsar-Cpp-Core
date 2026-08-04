@@ -60,7 +60,12 @@ ExecStartPre=$PULSAR_ROOT/core/scripts/pulsar-boot-preflight.sh
 TimeoutStartSec=0
 DROPIN
 
-chmod 0755 "$PULSAR_ROOT/core/scripts/touch-hotplug-event.sh"
+chmod 0755 \
+  "$PULSAR_ROOT/core/scripts/pulsar-boot-preflight.sh" \
+  "$PULSAR_ROOT/core/scripts/configure-audio.sh" \
+  "$PULSAR_ROOT/core/scripts/configure-network-boot.sh" \
+  "$PULSAR_ROOT/core/scripts/touch-hotplug-event.sh"
+
 install -m 0644 "$PULSAR_ROOT/core/config/99-pulsar-touch-hotplug.rules" "$touch_rule"
 
 systemctl daemon-reload
