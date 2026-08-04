@@ -42,8 +42,13 @@ EXCLUDES=(
   "--exclude=ui/frontend/dist/"
   "--exclude=ui/frontend/.vite/"
   "--exclude=ui/frontend/.cache/"
-  "--exclude=core/config/pulsar.local.env"
 )
+
+# Device-local configuration is preserved by default. A specific deployment
+# may opt in to syncing its reviewed local configuration.
+if [[ "${SYNC_INCLUDE_LOCAL_CONFIG:-0}" != "1" ]]; then
+  EXCLUDES+=("--exclude=core/config/pulsar.local.env")
+fi
 
 if [[ "${SYNC_INCLUDE_GIT}" != "1" ]]; then
   EXCLUDES+=("--exclude=.git/")
@@ -114,9 +119,31 @@ ensure_remote_ready() {
   ssh "${SSH_OPTS[@]}" "$REMOTE" "mkdir -p '$SYNC_REMOTE_DIR'"
 }
 
+backup_remote_local_config() {
+  [[ "${SYNC_INCLUDE_LOCAL_CONFIG:-0}" == "1" ]] || return 0
+
+  local local_file="$ROOT/core/config/pulsar.local.env"
+  [[ -f "$local_file" ]] ||
+    die "SYNC_INCLUDE_LOCAL_CONFIG=1 but $local_file does not exist."
+
+  local stamp remote_file backup_root backup_dir
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  remote_file="$SYNC_REMOTE_DIR/core/config/pulsar.local.env"
+  backup_root="${SYNC_REMOTE_BACKUP_DIR:-/home/matin/pulsar-sync-backups}"
+  backup_dir="$backup_root/local-config-$stamp"
+
+  ssh "${SSH_OPTS[@]}" "$REMOTE"     "if [ -f $(printf '%q' "$remote_file") ]; then
+       mkdir -p $(printf '%q' "$backup_dir")
+       cp -a $(printf '%q' "$remote_file") $(printf '%q' "$backup_dir/")
+     fi"
+
+  log "Preserved remote pulsar.local.env in $backup_dir"
+}
+
 sync_once() {
   build_ui_if_needed
   ensure_remote_ready
+  backup_remote_local_config
   rsync "${RSYNC_ARGS[@]}" "${EXCLUDES[@]}" "$ROOT"/ "$REMOTE:$SYNC_REMOTE_DIR"/
   log "Synced to $REMOTE:$SYNC_REMOTE_DIR"
   run_remote_apply

@@ -22,6 +22,30 @@ output_exists() {
   return 1
 }
 
+first_output_matching_glob() {
+  local pattern="$1"; shift
+  local item
+  [[ -n "$pattern" ]] || return 1
+  for item in "$@"; do
+    # Leave $pattern unquoted intentionally: DP-1-* must match DP-1-1,
+    # DP-1-3, and other provider suffixes created by NVIDIA/XRandR.
+    if [[ "$item" == $pattern ]]; then
+      printf '%s\n' "$item"
+      return 0
+    fi
+  done
+  return 1
+}
+
+resolve_preferred_output() {
+  local exact="$1" pattern="$2"; shift 2
+  if [[ -n "$exact" ]] && output_exists "$exact" "$@"; then
+    printf '%s\n' "$exact"
+    return 0
+  fi
+  first_output_matching_glob "$pattern" "$@"
+}
+
 join_by() {
   local delimiter="$1"
   shift || true
@@ -276,6 +300,10 @@ settle_samples="${PULSAR_DISPLAY_SETTLE_SAMPLES:-3}"
 preferred_settings_output="${PULSAR_PREFERRED_SETTINGS_OUTPUT:-}"
 preferred_main_output="${PULSAR_PREFERRED_MAIN_OUTPUT:-}"
 preferred_ar_output="${PULSAR_PREFERRED_AR_OUTPUT:-}"
+preferred_main_output_glob="${PULSAR_PREFERRED_MAIN_OUTPUT_GLOB:-}"
+preferred_ar_output_glob="${PULSAR_PREFERRED_AR_OUTPUT_GLOB:-}"
+require_display_roles="${PULSAR_REQUIRE_DISPLAY_ROLES:-0}"
+[[ "$require_display_roles" =~ ^(0|1)$ ]] || require_display_roles=0
 role_ui_output="${PULSAR_ROLE_UI_OUTPUT:-}"
 role_display_output="${PULSAR_ROLE_DISPLAY_OUTPUT:-}"
 role_ar1_output="${PULSAR_ROLE_AR1_OUTPUT:-}"
@@ -299,15 +327,20 @@ for _ in $(seq 1 "$retry_count"); do
   mapfile -t outputs < <(collect_connected_outputs "$xrandr_state")
   signature="$(printf '%s\n' "${outputs[@]}" | sort | paste -sd, -)"
 
+  resolved_main_output="$(resolve_preferred_output \
+    "$preferred_main_output" "$preferred_main_output_glob" "${outputs[@]}" || true)"
+  resolved_ar_output="$(resolve_preferred_output \
+    "$preferred_ar_output" "$preferred_ar_output_glob" "${outputs[@]}" || true)"
+
   found_settings=0
   found_main=0
   found_ar=0
   [[ -z "$preferred_settings_output" ]] && found_settings=1
-  [[ -z "$preferred_main_output" ]] && found_main=1
-  [[ -z "$preferred_ar_output" ]] && found_ar=1
+  [[ -z "$preferred_main_output" && -z "$preferred_main_output_glob" ]] && found_main=1
+  [[ -z "$preferred_ar_output" && -z "$preferred_ar_output_glob" ]] && found_ar=1
   output_exists "$preferred_settings_output" "${outputs[@]}" && found_settings=1 || true
-  output_exists "$preferred_main_output" "${outputs[@]}" && found_main=1 || true
-  output_exists "$preferred_ar_output" "${outputs[@]}" && found_ar=1 || true
+  output_exists "$resolved_main_output" "${outputs[@]}" && found_main=1 || true
+  output_exists "$resolved_ar_output" "${outputs[@]}" && found_ar=1 || true
 
   if [[ -n "$signature" && "$signature" == "$last_signature" ]]; then
     stable_samples=$((stable_samples + 1))
@@ -328,6 +361,24 @@ done
 # during the final settle/apply interval after the previous sample was taken.
 xrandr_state="$(read_xrandr_state)"
 mapfile -t outputs < <(collect_connected_outputs "$xrandr_state")
+
+resolved_main_output="$(resolve_preferred_output \
+  "$preferred_main_output" "$preferred_main_output_glob" "${outputs[@]}" || true)"
+resolved_ar_output="$(resolve_preferred_output \
+  "$preferred_ar_output" "$preferred_ar_output_glob" "${outputs[@]}" || true)"
+[[ -n "$resolved_main_output" ]] && preferred_main_output="$resolved_main_output"
+[[ -n "$resolved_ar_output" ]] && preferred_ar_output="$resolved_ar_output"
+
+if [[ "$require_display_roles" == "1" ]]; then
+  if [[ -n "$preferred_settings_output" ]] &&
+     ! output_exists "$preferred_settings_output" "${outputs[@]}"; then
+    die "Required settings output $preferred_settings_output is not connected."
+  fi
+  [[ -n "$resolved_main_output" ]] ||
+    die "Required main output is not connected (exact=$preferred_main_output, glob=$preferred_main_output_glob)."
+  [[ -n "$resolved_ar_output" ]] ||
+    die "Required AR output is not connected (exact=$preferred_ar_output, glob=$preferred_ar_output_glob)."
+fi
 
 if ((${#outputs[@]} < expected_output_count)); then
   warn "Expected $expected_output_count connected X11 displays but detected ${#outputs[@]} after ${retry_count}s; continuing with the available display set."
