@@ -6,157 +6,241 @@ REMOTE_USER="${PULSAR_REMOTE_USER:-matin}"
 REMOTE_ROOT="${PULSAR_REMOTE_ROOT:-/home/matin/Pulsar-Cpp-Core}"
 LOCAL_ROOT="${PULSAR_LOCAL_ROOT:-$PWD}"
 TS="$(date +%Y%m%d-%H%M%S)"
-SOCKET="/tmp/pulsar-stall-v2-${USER}-$$"
-LOCAL_BACKUP="$HOME/Downloads/Pulsar-Patch-Backups/stall-v2-$TS"
-LOCAL_LOG="$HOME/Downloads/pulsar-stall-root-fix-v2-$TS.log"
-PAYLOAD="/tmp/pulsar-stall-v2-$TS.tar.gz"
-REMOTE_PAYLOAD="/tmp/pulsar-stall-v2-$TS.tar.gz"
-REMOTE_SCRIPT="/tmp/pulsar-stall-v2-$TS.sh"
-SUCCESS=0
-LOCAL_PATCHED=0
+EXPECTED_PROFILE_SHA="a468f20e304e9543d4dc7aeb03b508a01e5257a8a3acdc59f81e11dba673c3f6"
 
-mkdir -p "$HOME/Downloads/Pulsar-Patch-Backups"
+SOCKET="/tmp/pulsar-reference-authority-${USER}-$$"
+LOCAL_LOG="$HOME/Downloads/pulsar-reference-authority-$TS.log"
+PAYLOAD="/tmp/pulsar-reference-authority-$TS.tar.gz"
+REMOTE_PAYLOAD="/tmp/pulsar-reference-authority-$TS.tar.gz"
+REMOTE_SCRIPT="/tmp/pulsar-reference-authority-$TS.sh"
 
-if [[ ! -f "$LOCAL_ROOT/CMakeLists.txt" || ! -f "$LOCAL_ROOT/ui/frontend/package.json" ]]; then
-  echo "ERROR: این دستور را از ریشه پروژه اجرا کن:"
-  echo "  cd ~/Music/Pulsar-Cpp-Core-PreStage8-Downloaded"
-  exit 1
+
+if [[ ! -f "$LOCAL_ROOT/CMakeLists.txt" ||
+      ! -f "$LOCAL_ROOT/camera/src/CameraDevice.cpp" ||
+      ! -f "$LOCAL_ROOT/core/config/pulsar.local.env" ]]; then
+    echo "ERROR: این اسکریپت را از ریشه پروژه اجرا کن:"
+    echo "  cd ~/Music/Pulsar-Cpp-Core-PreStage8-Downloaded"
+    exit 1
+fi
+
+if [[ "$(hostname -s 2>/dev/null || hostname)" == "pulsar" ]]; then
+    echo "ERROR: این اسکریپت را روی amin@localhost اجرا کن."
+    exit 1
 fi
 
 cleanup() {
-  ssh -S "$SOCKET" -O exit "$REMOTE_USER@$SERVER" >/dev/null 2>&1 || true
-  rm -f "$SOCKET" "$PAYLOAD"
+    ssh -S "$SOCKET" -O exit "$REMOTE_USER@$SERVER" >/dev/null 2>&1 || true
+    rm -f "$SOCKET" "$PAYLOAD"
 }
 
-restore_local() {
-  [[ "$LOCAL_PATCHED" == "1" ]] || return 0
-  [[ -d "$LOCAL_BACKUP/project" ]] || return 0
-  echo "Restoring local project from $LOCAL_BACKUP ..."
-  cp -a "$LOCAL_BACKUP/project/." "$LOCAL_ROOT/"
+trap cleanup EXIT
+
+cd "$LOCAL_ROOT"
+
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+    echo "ERROR: پروژه محلی Git repository نیست."
+    exit 1
 }
 
-on_exit() {
-  status=$?
-  if [[ "$status" -ne 0 && "$SUCCESS" != "1" ]]; then
-    restore_local || true
-  fi
-  cleanup
-  exit "$status"
+GIT_BRANCH="$(git branch --show-current)"
+[[ -n "$GIT_BRANCH" ]] || {
+    echo "ERROR: Git در حالت detached HEAD است."
+    exit 1
 }
-trap on_exit EXIT
 
-FILES=(
-  core/config/pulsar.local.env
-  camera/src/CameraDevice.cpp
-  ui/backend/src/HttpServer.cpp
-  ui/frontend/src/app/App.tsx
-  core/scripts/start-session.sh
-  camera/profiles/FCU22080658-throughput395.txt
-  camera/profiles/FCU22080659-throughput395.txt
-  ui/dist
-)
-
-mkdir -p "$LOCAL_BACKUP/project"
-for rel in "${FILES[@]}"; do
-  if [[ -e "$LOCAL_ROOT/$rel" ]]; then
-    mkdir -p "$LOCAL_BACKUP/project/$(dirname "$rel")"
-    cp -a "$LOCAL_ROOT/$rel" "$LOCAL_BACKUP/project/$rel"
-  fi
-done
-LOCAL_PATCHED=1
+git remote get-url origin >/dev/null 2>&1 || {
+    echo "ERROR: Git remote با نام origin پیدا نشد."
+    exit 1
+}
 
 echo "============================================================"
-echo "PULSAR STALL ROOT FIX V2"
+echo "PULSAR EXACT REFERENCE IMAGE + LOW LATENCY V3"
 echo "Local project: $LOCAL_ROOT"
 echo "Remote project: $REMOTE_USER@$SERVER:$REMOTE_ROOT"
-echo "Local backup: $LOCAL_BACKUP"
+echo "Profile SHA256: $EXPECTED_PROFILE_SHA"
+echo "Backup policy: GitHub commits/tags only (no local backup directory)"
 echo "============================================================"
 
 echo
-echo "[1/7] Applying durable fixes to the local project..."
+echo "[0/8] Saving the current project state to GitHub..."
+
+git add -A
+if ! git diff --cached --quiet; then
+    git commit -m "Checkpoint before exact reference image fix [$TS]"
+fi
+
+BEFORE_COMMIT="$(git rev-parse HEAD)"
+BEFORE_TAG="pulsar-before-reference-image-$TS-${BEFORE_COMMIT:0:12}"
+
+git tag -f "$BEFORE_TAG" "$BEFORE_COMMIT"
+git push origin "$GIT_BRANCH"
+git push origin "refs/tags/$BEFORE_TAG"
+
+echo "GitHub checkpoint commit: $BEFORE_COMMIT"
+echo "GitHub checkpoint tag: $BEFORE_TAG"
+
+echo
+echo "[1/8] Installing the byte-exact reference profiles locally..."
+
+mkdir -p "$LOCAL_ROOT/camera/profiles"
+
+base64 -d <<'PROFILE_GZ_B64' | gzip -d \
+    > "$LOCAL_ROOT/camera/profiles/FCU22080658-reference350.txt"
+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
+PROFILE_GZ_B64
+
+cp -a \
+    "$LOCAL_ROOT/camera/profiles/FCU22080658-reference350.txt" \
+    "$LOCAL_ROOT/camera/profiles/FCU22080659-reference350.txt"
+
+for profile in \
+    "$LOCAL_ROOT/camera/profiles/FCU22080658-reference350.txt" \
+    "$LOCAL_ROOT/camera/profiles/FCU22080659-reference350.txt"
+do
+    actual="$(sha256sum "$profile" | awk '{print $1}')"
+    if [[ "$actual" != "$EXPECTED_PROFILE_SHA" ]]; then
+        echo "ERROR: هش پروفایل اشتباه است: $profile"
+        exit 1
+    fi
+done
+
+echo
+echo "[2/8] Making the imported profile authoritative..."
 
 python3 - "$LOCAL_ROOT" <<'PY_PATCH'
 from pathlib import Path
 import sys
 
 root = Path(sys.argv[1])
-env_path = root / "core/config/pulsar.local.env"
 camera_path = root / "camera/src/CameraDevice.cpp"
-http_path = root / "ui/backend/src/HttpServer.cpp"
-app_path = root / "ui/frontend/src/app/App.tsx"
-session_path = root / "core/scripts/start-session.sh"
-profile_dir = root / "camera/profiles"
+env_paths = [
+    root / "core/config/pulsar.env",
+    root / "core/config/pulsar.local.env",
+]
 
-for path in (env_path, camera_path, http_path, app_path, session_path):
-    if not path.exists():
-        raise SystemExit(f"ERROR: missing file: {path}")
-
-# Runtime settings: latest frames, no periodic topology polling, stable source FPS.
-settings = {
-    "PULSAR_STEREO_PAIRING_MODE": "latest",
-    "PULSAR_CAMERA_FPS": "32",
-    "PULSAR_DISPLAY_HOTPLUG_WATCH": "0",
-    "PULSAR_AUDIO_HOTPLUG_WATCH": "0",
-    "PULSAR_TOUCH_HOTPLUG_WATCH": "0",
-    "PULSAR_BROWSER_GPU": "1",
-    "PULSAR_GPU_PIPELINE": "both",
-    "PULSAR_GL_PBO_UPLOAD": "1",
-    "PULSAR_LEFT_CAMERA_SERIAL": "FCU22080658",
-    "PULSAR_RIGHT_CAMERA_SERIAL": "FCU22080659",
-    "PULSAR_LEFT_CAMERA_PROFILE": "camera/profiles/FCU22080658-throughput395.txt",
-    "PULSAR_RIGHT_CAMERA_PROFILE": "camera/profiles/FCU22080659-throughput395.txt",
-}
-
-lines = env_path.read_text().splitlines()
-out = []
-written = set()
-for line in lines:
-    stripped = line.strip()
-    if not stripped or stripped.startswith("#") or "=" not in line:
-        out.append(line)
-        continue
-    key = line.split("=", 1)[0].strip()
-    if key in settings:
-        if key not in written:
-            out.append(f"{key}={settings[key]}")
-            written.add(key)
-        continue
-    out.append(line)
-if any(k not in written for k in settings):
-    out.extend(["", "# Stable real-time latency configuration V2"])
-    for key, value in settings.items():
-        if key not in written:
-            out.append(f"{key}={value}")
-env_path.write_text("\n".join(out).rstrip() + "\n")
-
-# Separate profiles and force latest-frame stream handling.
-right_profile = profile_dir / "FCU22080659-throughput395.txt"
-left_profile = profile_dir / "FCU22080658-throughput395.txt"
-if not right_profile.exists():
-    raise SystemExit(f"ERROR: missing profile: {right_profile}")
-if not left_profile.exists():
-    left_profile.write_bytes(right_profile.read_bytes())
-for profile in (left_profile, right_profile):
-    text = profile.read_text(errors="replace")
-    text = text.replace("StreamBufferHandlingMode\tOldestFirst", "StreamBufferHandlingMode\tNewestOnly")
-    profile.write_text(text)
-
-# Correct Galaxy stream-layer handle and reduce acquisition queue depth.
 text = camera_path.read_text()
-marker = "PULSAR_STREAM_HANDLE_NEWEST_ONLY_V1"
-if marker not in text:
-    old_transfer = '''  setInt(device_, "StreamTransferSize", 64 * 1024);
-  setInt(device_, "StreamTransferNumberUrb", 32);
-  setBool(device_, "FrameStoreCoverActive", true);
-  setEnum(device_, "CoverFrameStoreMode", "On");
-'''
-    new_transfer = '''  // PULSAR_STREAM_HANDLE_NEWEST_ONLY_V1
-  // Stream nodes belong to GX_DS_HANDLE. Writing them through the device
-  // handle silently left the SDK in OldestFirst/unchanged mode.
+
+def replace_function(source: str, signature: str, replacement: str) -> str:
+    start = source.find(signature)
+    if start < 0:
+        raise SystemExit(f"ERROR: function not found: {signature}")
+
+    opening = source.find("{", start)
+    if opening < 0:
+        raise SystemExit(f"ERROR: opening brace not found: {signature}")
+
+    depth = 0
+    end = None
+    in_string = False
+    quote = ""
+    escaped = False
+
+    for index in range(opening, len(source)):
+        char = source[index]
+
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                in_string = False
+            continue
+
+        if char in ('"', "'"):
+            in_string = True
+            quote = char
+            continue
+
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                end = index + 1
+                break
+
+    if end is None:
+        raise SystemExit(f"ERROR: function is not balanced: {signature}")
+
+    return source[:start] + replacement + source[end:]
+
+configure_function = r'''bool CameraDevice::configure() {
+  profileImported_ = false;
+  controlsApplied_ = false;
+
+  if (profileEnabled_) {
+    if (!importGalaxyProfile() && profileRequired_) {
+      std::cerr << label_ << ": required GalaxyView profile could not be loaded\n";
+      return false;
+    }
+  }
+
+  // PULSAR_REFERENCE_PROFILE_AUTHORITY_V2
+  // The imported GalaxyView file owns all sensor and image parameters.
+  // Runtime controls are allowed only when no profile was imported.
+  if (!profileImported_) {
+    if (setEnumOneOf(device_, "UserSetSelector", {"Default", "UserSet0"})) {
+      setCommand(device_, "UserSetLoad");
+    }
+    applyLowLatencyAcquisitionSetup(device_, targetFps_);
+
+    setEnumOneOf(device_, "RegionSelector", {"Region0", "Region1"});
+    setEnum(device_, "RegionMode", "Off");
+
+    GX_INT_VALUE sensorWidthMax{};
+    GX_INT_VALUE sensorHeightMax{};
+    const bool haveSensorWidth = getInt(device_, "WidthMax", sensorWidthMax);
+    const bool haveSensorHeight = getInt(device_, "HeightMax", sensorHeightMax);
+    int sensorScale = std::clamp(sensorScale_, 1, 4);
+
+    if (haveSensorWidth && haveSensorHeight) {
+      const double widthRatio =
+          static_cast<double>(sensorWidthMax.nCurValue) / std::max(1u, maxWidth_);
+      const double heightRatio =
+          static_cast<double>(sensorHeightMax.nCurValue) / std::max(1u, maxHeight_);
+      const int recommendedScale = std::clamp(
+          static_cast<int>(std::ceil(std::max({1.0, widthRatio, heightRatio}))),
+          1,
+          4);
+      sensorScale = std::max(sensorScale, recommendedScale);
+    }
+
+    configuredSensorScale_ = sensorScale;
+    setEnumOneOf(device_, "BinningHorizontalMode", {"Average", "Sum"});
+    setEnumOneOf(device_, "BinningVerticalMode", {"Average", "Sum"});
+    setInt(device_, "BinningHorizontal", sensorScale);
+    setInt(device_, "BinningVertical", sensorScale);
+    setInt(device_, "DecimationHorizontal", 1);
+    setInt(device_, "DecimationVertical", 1);
+    setInt(device_, "SensorDecimationHorizontal", 1);
+    setInt(device_, "SensorDecimationVertical", 1);
+    setBool(device_, "CenterX", false);
+    setBool(device_, "CenterY", false);
+
+    GX_INT_VALUE widthMax{};
+    GX_INT_VALUE heightMax{};
+
+    if (getInt(device_, "WidthMax", widthMax)) {
+      setInt(device_, "Width", widthMax.nCurValue);
+    }
+    if (getInt(device_, "HeightMax", heightMax)) {
+      setInt(device_, "Height", heightMax.nCurValue);
+    }
+
+    setInt(device_, "OffsetX", 0);
+    setInt(device_, "OffsetY", 0);
+    applyControls(controls_(), true);
+  }
+
+  // Keep only host-side latency optimizations outside profile authority.
+  // These do not alter exposure, gain, color, LUT, ROI or sensor geometry.
   GX_DS_HANDLE streamHandle = nullptr;
   const bool haveStreamHandle =
-      GXGetDataStreamHandleFromDev(device_, 0, &streamHandle) == GX_STATUS_SUCCESS &&
+      GXGetDataStreamHandleFromDev(device_, 0, &streamHandle) ==
+          GX_STATUS_SUCCESS &&
       streamHandle != nullptr;
+
   GX_PORT_HANDLE streamPort = haveStreamHandle
       ? static_cast<GX_PORT_HANDLE>(streamHandle)
       : static_cast<GX_PORT_HANDLE>(device_);
@@ -165,363 +249,483 @@ if marker not in text:
   setInt(streamPort, "StreamTransferNumberUrb", 64);
   setBool(device_, "FrameStoreCoverActive", true);
   setEnum(device_, "CoverFrameStoreMode", "On");
-'''
-    old_queue = '''  const char* streamBufferMode = "unchanged";
-  if (setEnum(device_, "StreamBufferHandlingMode", "NewestOnly")) {
-    streamBufferMode = "NewestOnly";
-  } else if (setEnum(device_, "StreamBufferHandlingMode", "OldestFirstOverwrite")) {
-    streamBufferMode = "OldestFirstOverwrite";
-  }
 
-  constexpr uint64_t kAcquisitionBufferCount = 4;
-'''
-    new_queue = '''  const char* streamBufferMode = "unchanged";
+  const char* streamBufferMode = "unchanged";
+
   if (setEnum(streamPort, "StreamBufferHandlingMode", "NewestOnly")) {
     streamBufferMode = "NewestOnly";
-  } else if (setEnum(streamPort, "StreamBufferHandlingMode", "OldestFirstOverwrite")) {
+  } else if (
+      setEnum(streamPort, "StreamBufferHandlingMode", "OldestFirstOverwrite")) {
     streamBufferMode = "OldestFirstOverwrite";
   }
 
   constexpr uint64_t kAcquisitionBufferCount = 2;
-'''
-    if old_transfer not in text or old_queue not in text:
-        raise SystemExit("ERROR: CameraDevice.cpp does not match the expected source; no partial patch was written.")
-    text = text.replace(old_transfer, new_transfer, 1)
-    text = text.replace(old_queue, new_queue, 1)
-    camera_path.write_text(text)
 
-# Remove expensive subprocesses from the /api/state hot path and cache topology.
-text = http_path.read_text()
-marker = "PULSAR_STATE_FAST_CACHE_V2"
-if marker not in text:
-    if "#include <mutex>" not in text:
-        text = text.replace("#include <map>\n", "#include <map>\n#include <mutex>\n", 1)
+  if (GXSetAcqusitionBufferNumber(device_, kAcquisitionBufferCount) !=
+      GX_STATUS_SUCCESS) {
+    std::cerr << label_
+              << ": warning: could not set acquisition buffer count\n";
+  }
 
-    old_audio = '''  for (auto& output : outputs) {
-    if (const auto sinkState = readSinkState(output.sink)) {
-      output.volume = std::clamp(sinkState->volume, 0, 125);
-      output.muted = sinkState->muted;
+  std::cerr << label_ << ": low-latency stream-buffer-mode="
+            << streamBufferMode << " acquisition-buffers="
+            << kAcquisitionBufferCount << '\n';
+
+  colorFilter_ = GX_COLOR_FILTER_NONE;
+
+  if (available(device_, "PixelColorFilter")) {
+    GX_ENUM_VALUE value{};
+
+    if (GXGetEnumValue(device_, "PixelColorFilter", &value) ==
+        GX_STATUS_SUCCESS) {
+      colorFilter_ = value.stCurValue.nCurValue;
     }
   }
 
-  return outputs;
-'''
-    new_audio = '''  // PULSAR_STATE_FAST_CACHE_V2
-  // Do not fork pactl processes for every /api/state request. State writes
-  // already update volume/mute and explicit output actions still call pactl.
-  return outputs;
-'''
-    if old_audio not in text:
-        raise SystemExit("ERROR: audio state hot-path block not found.")
-    text = text.replace(old_audio, new_audio, 1)
+  return true;
+}'''
 
-    old_name = "std::vector<DisplayPortSnapshot> readDisplayPorts() {"
-    if old_name not in text:
-        raise SystemExit("ERROR: readDisplayPorts function not found.")
-    text = text.replace(old_name, "std::vector<DisplayPortSnapshot> readDisplayPortsUncached() {", 1)
+text = replace_function(
+    text,
+    "bool CameraDevice::configure()",
+    configure_function,
+)
 
-    end_marker = '''  return ports;
+apply_signature = (
+    "void CameraDevice::applyControls("
+    "const core::CameraControls& controls, bool force) {"
+)
+apply_start = text.find(apply_signature)
+
+if apply_start < 0:
+    raise SystemExit("ERROR: applyControls function not found.")
+
+insert_at = apply_start + len(apply_signature)
+guard_marker = "PULSAR_REFERENCE_APPLY_GUARD_V2"
+
+if guard_marker not in text[insert_at:insert_at + 600]:
+    guard = r'''
+  // PULSAR_REFERENCE_APPLY_GUARD_V2
+  // The imported profile is the single source of truth for exposure, gain,
+  // black level, white balance, gamma, LUT and sensor geometry.
+  if (profileImported_) return;
+'''
+    text = text[:insert_at] + guard + text[insert_at:]
+
+redundant_guard = r'''
+  if (profileImported_) {
+    appliedControls_ = controls;
+    controlsApplied_ = true;
+    return;
+  }
+'''
+text = text.replace(redundant_guard, "\n", 1)
+
+camera_path.write_text(text)
+
+settings = {
+    "PULSAR_LEFT_CAMERA_SERIAL": "FCU22080658",
+    "PULSAR_RIGHT_CAMERA_SERIAL": "FCU22080659",
+    "PULSAR_LEFT_CAMERA_PROFILE":
+        "camera/profiles/FCU22080658-reference350.txt",
+    "PULSAR_RIGHT_CAMERA_PROFILE":
+        "camera/profiles/FCU22080659-reference350.txt",
+    "PULSAR_CAMERA_PROFILE_ENABLED": "1",
+    "PULSAR_CAMERA_PROFILE_VERIFY": "1",
+    "PULSAR_CAMERA_PROFILE_REQUIRED": "1",
+    "PULSAR_GPU_PIPELINE": "both",
+    "PULSAR_GL_PBO_UPLOAD": "1",
+    "PULSAR_STEREO_PAIRING_MODE": "latest",
+    "PULSAR_CAMERA_FPS": "32",
+    "PULSAR_CAMERA_EXPOSURE_US": "30000",
+    "PULSAR_CAMERA_GAIN_DB_X10": "0",
+    "PULSAR_CAMERA_AUTO_EXPOSURE": "0",
+    "PULSAR_CAMERA_WHITE_BALANCE": "Manual",
+    "PULSAR_CAMERA_WB_RED_X1000": "2250",
+    "PULSAR_CAMERA_WB_GREEN_X1000": "1000",
+    "PULSAR_CAMERA_WB_BLUE_X1000": "1730",
+    "PULSAR_CAMERA_ENHANCE": "Low",
+    "PULSAR_JPEG_QUALITY": "88",
 }
 
-SystemDetailsSnapshot buildSystemDetails(const std::vector<DisplayPortSnapshot>& ports) {
-'''
-    wrapper = '''  return ports;
-}
+for env_path in env_paths:
+    if not env_path.exists():
+        env_path.touch()
 
-std::vector<DisplayPortSnapshot> readDisplayPorts() {
-  using Clock = std::chrono::steady_clock;
-  static std::mutex cacheMutex;
-  static Clock::time_point updated{};
-  static std::vector<DisplayPortSnapshot> cached;
-  const auto now = Clock::now();
+    lines = env_path.read_text(errors="replace").splitlines()
+    output = []
+    written = set()
 
-  std::lock_guard<std::mutex> lock(cacheMutex);
-  if (cached.empty() || now - updated >= std::chrono::seconds(60)) {
-    cached = readDisplayPortsUncached();
-    updated = now;
-  }
-  return cached;
-}
+    for line in lines:
+        stripped = line.strip()
 
-SystemDetailsSnapshot buildSystemDetails(const std::vector<DisplayPortSnapshot>& ports) {
-'''
-    if end_marker not in text:
-        raise SystemExit("ERROR: readDisplayPorts end marker not found.")
-    text = text.replace(end_marker, wrapper, 1)
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            output.append(line)
+            continue
 
-    old_journal = '''  try {
-    const std::string logOutput = runCommand({"journalctl", "-u", "pulsar-kiosk.service", "-n", "200", "--no-pager"},
-                                             std::chrono::seconds(5));
-    details.logLines = static_cast<int>(std::count(logOutput.begin(), logOutput.end(), '\\n'));
-  } catch (...) {
-    details.logLines = 0;
-  }
-'''
-    new_journal = '''  try {
-    const auto logPath = dataRootPath() / "pulsar.log";
-    const auto bytes = std::filesystem::exists(logPath)
-        ? std::filesystem::file_size(logPath)
-        : 0u;
-    details.logLines = bytes == 0u ? 0 : 200;
-  } catch (...) {
-    details.logLines = 0;
-  }
-'''
-    if old_journal not in text:
-        raise SystemExit("ERROR: journalctl hot-path block not found.")
-    text = text.replace(old_journal, new_journal, 1)
+        key = line.split("=", 1)[0].strip()
 
-    old_details = '''std::string systemDetailsJson(const std::vector<DisplayPortSnapshot>& ports) {
-  const auto details = buildSystemDetails(ports);
-  std::ostringstream json;
-'''
-    new_details = '''std::string systemDetailsJson(const std::vector<DisplayPortSnapshot>& ports) {
-  using Clock = std::chrono::steady_clock;
-  static std::mutex cacheMutex;
-  static Clock::time_point updated{};
-  static SystemDetailsSnapshot cached;
-  static bool cacheValid = false;
-  SystemDetailsSnapshot details;
-  const auto now = Clock::now();
-  {
-    std::lock_guard<std::mutex> lock(cacheMutex);
-    if (!cacheValid || now - updated >= std::chrono::seconds(10)) {
-      cached = buildSystemDetails(ports);
-      updated = now;
-      cacheValid = true;
-    }
-    details = cached;
-  }
-  std::ostringstream json;
-'''
-    if old_details not in text:
-        raise SystemExit("ERROR: systemDetailsJson start not found.")
-    text = text.replace(old_details, new_details, 1)
-    http_path.write_text(text)
+        if key in settings:
+            if key not in written:
+                output.append(f"{key}={settings[key]}")
+                written.add(key)
+            continue
 
-# Slow non-camera state polling; camera MJPEG continues independently.
-app_text = app_path.read_text()
-old_refresh = 'const refreshMs = activePage === "system" || activePage === "display-settings" ? 2000 : 6000;'
-new_refresh = 'const refreshMs = activePage === "system" || activePage === "display-settings" ? 5000 : 15000;'
-if old_refresh in app_text:
-    app_text = app_text.replace(old_refresh, new_refresh, 1)
-elif new_refresh not in app_text:
-    raise SystemExit("ERROR: App.tsx refresh interval marker not found.")
-app_path.write_text(app_text)
+        output.append(line)
 
-# Configure touch once at startup. A periodic xrandr/xinput watcher caused a
-# visible freeze every two seconds and was not terminated by session cleanup.
-session = session_path.read_text()
-if 'touch_watch_pid=""' not in session:
-    session = session.replace('audio_watch_pid=""\n', 'audio_watch_pid=""\ntouch_watch_pid=""\n', 1)
-    session = session.replace(
-        'kill "$audio_watch_pid" "$display_watch_pid" "$browser_pid" "$core_pid" "$openbox_pid" "$unclutter_pid" 2>/dev/null || true',
-        'kill "$touch_watch_pid" "$audio_watch_pid" "$display_watch_pid" "$browser_pid" "$core_pid" "$openbox_pid" "$unclutter_pid" 2>/dev/null || true',
-        1,
-    )
-old_touch = '"$PULSAR_ROOT/core/scripts/configure-touch.sh" --watch --interval 2 >>"$touch_log_file" 2>&1 &\n'
-new_touch = '''"$PULSAR_ROOT/core/scripts/configure-touch.sh" >>"$touch_log_file" 2>&1 || true
-if [[ "${PULSAR_TOUCH_HOTPLUG_WATCH:-0}" == "1" ]]; then
-  "$PULSAR_ROOT/core/scripts/configure-touch.sh" --watch --interval 30 >>"$touch_log_file" 2>&1 &
-  touch_watch_pid=$!
-fi
-'''
-if old_touch in session:
-    session = session.replace(old_touch, new_touch, 1)
-elif new_touch not in session:
-    raise SystemExit("ERROR: touch watcher start line not found.")
-session_path.write_text(session)
+    missing = [key for key in settings if key not in written]
+
+    if missing:
+        output.extend(
+            ["", "# Exact image authority from the known-good reference ZIP"]
+        )
+        output.extend(f"{key}={settings[key]}" for key in missing)
+
+    env_path.write_text("\n".join(output).rstrip() + "\n")
+
+print("CameraDevice profile authority and reference settings applied.")
 PY_PATCH
 
-chmod +x "$LOCAL_ROOT/core/scripts/start-session.sh"
+grep -q 'PULSAR_REFERENCE_PROFILE_AUTHORITY_V2' \
+    "$LOCAL_ROOT/camera/src/CameraDevice.cpp"
+
+grep -q 'PULSAR_REFERENCE_APPLY_GUARD_V2' \
+    "$LOCAL_ROOT/camera/src/CameraDevice.cpp"
+
+echo
+echo "[3/8] Validating and saving the final patch to GitHub..."
+
 bash -n "$LOCAL_ROOT/core/scripts/start-session.sh"
+git diff --check
+
+git add \
+    camera/src/CameraDevice.cpp \
+    core/config/pulsar.env \
+    camera/profiles/FCU22080658-reference350.txt \
+    camera/profiles/FCU22080659-reference350.txt
+
+# pulsar.local.env is committed only when it is already tracked. An ignored
+# machine-local configuration is deployed to the server but is not forced into GitHub.
+if git ls-files --error-unmatch core/config/pulsar.local.env >/dev/null 2>&1; then
+    git add core/config/pulsar.local.env
+fi
+
+if git diff --cached --quiet; then
+    echo "No new source change to commit; using the current HEAD."
+else
+    git commit -m "Use exact reference camera profile with low latency [$TS]"
+fi
+
+PATCH_COMMIT="$(git rev-parse HEAD)"
+PATCH_TAG="pulsar-reference-image-$TS-${PATCH_COMMIT:0:12}"
+
+git tag -f "$PATCH_TAG" "$PATCH_COMMIT"
+git push origin "$GIT_BRANCH"
+git push origin "refs/tags/$PATCH_TAG"
+
+echo "GitHub patch commit: $PATCH_COMMIT"
+echo "GitHub patch tag: $PATCH_TAG"
 
 echo
-echo "[2/7] Building the UI locally with the working npm installation..."
-"$LOCAL_ROOT/core/scripts/build-ui.sh" 2>&1 | tee "$LOCAL_LOG"
+echo "[4/8] Creating the deployment payload from the GitHub-saved files..."
 
-echo
-echo "[3/7] Creating a small deployment payload..."
 tar -C "$LOCAL_ROOT" -czf "$PAYLOAD" \
-  core/config/pulsar.local.env \
-  camera/src/CameraDevice.cpp \
-  ui/backend/src/HttpServer.cpp \
-  ui/frontend/src/app/App.tsx \
-  core/scripts/start-session.sh \
-  camera/profiles/FCU22080658-throughput395.txt \
-  camera/profiles/FCU22080659-throughput395.txt \
-  ui/dist
+    camera/src/CameraDevice.cpp \
+    core/config/pulsar.env \
+    core/config/pulsar.local.env \
+    camera/profiles/FCU22080658-reference350.txt \
+    camera/profiles/FCU22080659-reference350.txt
 
-cat > /tmp/pulsar-stall-v2-remote.sh <<'REMOTE_SCRIPT_BODY'
+cat > /tmp/pulsar-reference-authority-remote.sh <<'REMOTE'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-ROOT="${PULSAR_ROOT:-/home/matin/Pulsar-Cpp-Core}"
+ROOT="${PULSAR_ROOT:?}"
 TS="${PULSAR_TS:?}"
 PAYLOAD="${PULSAR_PAYLOAD:?}"
-BACKUP="$ROOT/.pulsar-backups/stall-root-fix-v2-$TS"
+EXPECTED_PROFILE_SHA="${PULSAR_PROFILE_SHA:?}"
+
+ROLLBACK_TAR="/tmp/pulsar-reference-authority-rollback-$TS.tar.gz"
+STAGING="$ROOT/core/build-reference-authority-$TS"
 APP_LOG="$ROOT/core/data/pulsar.log"
-BUILD_LOG="$ROOT/core/data/stall-root-fix-v2-build-$TS.log"
-ROLLBACK_DONE=0
-START_LINE=0
+CURRENT_BINARY="$ROOT/core/build/pulsar-core"
+OLD_BINARY="/tmp/pulsar-reference-authority-pulsar-core-$TS"
 
 rollback() {
-  code=$?
-  trap - ERR
-  set +e
-  if [[ "$ROLLBACK_DONE" == "1" ]]; then
+    code=$?
+    trap - ERR
+    set +e
+    echo
+    echo "ERROR: server update failed; restoring the temporary pre-change state..."
+
+    if [[ -f "$ROLLBACK_TAR" ]]; then
+        tar -C "$ROOT" -xzf "$ROLLBACK_TAR"
+    fi
+
+    if [[ -f "$OLD_BINARY" ]]; then
+        install -m 0755 "$OLD_BINARY" "$CURRENT_BINARY"
+    fi
+
+    sudo -n systemctl restart pulsar-kiosk.service >/dev/null 2>&1 || true
+    rm -rf "$STAGING"
+    rm -f "$ROLLBACK_TAR" "$OLD_BINARY"
+    echo "The durable backup remains in GitHub tag: ${PULSAR_BEFORE_TAG:-unknown}"
     exit "$code"
-  fi
-  ROLLBACK_DONE=1
-  echo
-  echo "ERROR: remote build/apply failed; restoring $BACKUP"
-  if [[ -d "$BACKUP/project" ]]; then
-    cp -a "$BACKUP/project/." "$ROOT/"
-  fi
-  chmod +x "$ROOT/core/scripts/start-session.sh" 2>/dev/null || true
-  cd "$ROOT"
-  ./run.sh build >/dev/null 2>&1 || true
-  sudo -n systemctl restart pulsar-kiosk.service >/dev/null 2>&1 || true
-  echo "REMOTE_ROLLBACK_COMPLETE"
-  exit "$code"
 }
 trap rollback ERR
 
-mkdir -p "$BACKUP/project/core/config" \
-         "$BACKUP/project/camera/src" \
-         "$BACKUP/project/ui/backend/src" \
-         "$BACKUP/project/ui/frontend/src/app" \
-         "$BACKUP/project/core/scripts" \
-         "$BACKUP/project/camera/profiles" \
-         "$BACKUP/project/ui"
+for required in \
+    "$ROOT/CMakeLists.txt" \
+    "$ROOT/camera/src/CameraDevice.cpp" \
+    "$ROOT/core/config/pulsar.local.env"
+do
+    [[ -e "$required" ]] || {
+        echo "ERROR: missing server file: $required"
+        exit 1
+    }
+done
 
-for rel in \
-  core/config/pulsar.local.env \
-  camera/src/CameraDevice.cpp \
-  ui/backend/src/HttpServer.cpp \
-  ui/frontend/src/app/App.tsx \
-  core/scripts/start-session.sh \
-  camera/profiles/FCU22080658-throughput395.txt \
-  camera/profiles/FCU22080659-throughput395.txt \
-  ui/dist
- do
-  if [[ -e "$ROOT/$rel" ]]; then
-    mkdir -p "$BACKUP/project/$(dirname "$rel")"
-    cp -a "$ROOT/$rel" "$BACKUP/project/$rel"
-  fi
- done
+mkdir -p "$ROOT/core/data"
 
-[[ -r "$PAYLOAD" ]] || { echo "ERROR: missing payload $PAYLOAD"; exit 1; }
-tar -xzf "$PAYLOAD" -C "$ROOT"
-chmod +x "$ROOT/core/scripts/start-session.sh"
-bash -n "$ROOT/core/scripts/start-session.sh"
+# Temporary rollback data exists only during this run. The permanent
+# checkpoint was already pushed to GitHub before deployment.
+ROLLBACK_LIST=()
+for item in \
+    camera/src/CameraDevice.cpp \
+    core/config/pulsar.env \
+    core/config/pulsar.local.env \
+    camera/profiles/FCU22080658-reference350.txt \
+    camera/profiles/FCU22080659-reference350.txt
+do
+    [[ -e "$ROOT/$item" ]] && ROLLBACK_LIST+=("$item")
+done
 
+if [[ "${#ROLLBACK_LIST[@]}" -eq 0 ]]; then
+    echo "ERROR: no server files were available for temporary rollback."
+    exit 1
+fi
+
+tar -C "$ROOT" -czf "$ROLLBACK_TAR" "${ROLLBACK_LIST[@]}"
+
+if [[ -x "$CURRENT_BINARY" ]]; then
+    cp -a "$CURRENT_BINARY" "$OLD_BINARY"
+fi
+
+echo
+echo "[5/8] Installing source and exact profiles on the server..."
+
+tar -C "$ROOT" -xzf "$PAYLOAD"
+
+for profile in \
+    "$ROOT/camera/profiles/FCU22080658-reference350.txt" \
+    "$ROOT/camera/profiles/FCU22080659-reference350.txt"
+do
+    actual="$(sha256sum "$profile" | awk '{print $1}')"
+
+    if [[ "$actual" != "$EXPECTED_PROFILE_SHA" ]]; then
+        echo "ERROR: server profile checksum mismatch: $profile"
+        exit 1
+    fi
+done
+
+grep -q 'PULSAR_REFERENCE_PROFILE_AUTHORITY_V2' \
+    "$ROOT/camera/src/CameraDevice.cpp"
+
+grep -q 'PULSAR_REFERENCE_APPLY_GUARD_V2' \
+    "$ROOT/camera/src/CameraDevice.cpp"
+
+echo
+echo "[6/8] Building a separate CUDA/NPP binary while kiosk stays running..."
+
+rm -rf "$STAGING"
+
+cmake \
+    -S "$ROOT" \
+    -B "$STAGING" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_CUDA_COMPILER=/usr/local/cuda-13.2/bin/nvcc \
+    -DCMAKE_CUDA_ARCHITECTURES=86
+
+cmake --build "$STAGING" -j"$(nproc)"
+
+test -x "$STAGING/pulsar-core"
+
+if ! ldd "$STAGING/pulsar-core" | grep -q 'libcudart'; then
+    echo "ERROR: staged binary is not linked to CUDA."
+    exit 1
+fi
+
+if ldd "$STAGING/pulsar-core" | grep -q 'not found'; then
+    echo "ERROR: staged binary has a missing library."
+    ldd "$STAGING/pulsar-core"
+    exit 1
+fi
+
+echo
+echo "[7/8] Atomically installing the binary and restarting..."
+
+mkdir -p "$ROOT/core/build"
+install -m 0755 "$STAGING/pulsar-core" "$CURRENT_BINARY"
+
+START_LINE=0
 if [[ -r "$APP_LOG" ]]; then
-  START_LINE="$(wc -l < "$APP_LOG" || echo 0)"
+    START_LINE="$(wc -l < "$APP_LOG" 2>/dev/null || echo 0)"
 fi
 
-echo "[4/7] Clean C++ build on server (UI was already built locally)..."
-rm -rf "$ROOT/core/build"
-cd "$ROOT"
-./run.sh build 2>&1 | tee "$BUILD_LOG"
-
-if ! ldd "$ROOT/core/build/pulsar-core" | grep -q 'libcudart'; then
-  echo "ERROR: final binary is not linked to CUDA."
-  exit 1
-fi
-if ldd "$ROOT/core/build/pulsar-core" | grep -q 'not found'; then
-  echo "ERROR: a runtime library is missing."
-  ldd "$ROOT/core/build/pulsar-core" | grep 'not found' || true
-  exit 1
-fi
-
-echo "[5/7] Restarting kiosk..."
 sudo -n systemctl restart pulsar-kiosk.service
 
 for _ in $(seq 1 120); do
-  if systemctl is-active --quiet pulsar-kiosk.service && \
-     pgrep -x pulsar-core >/dev/null 2>&1 && \
-     tail -n "+$((START_LINE + 1))" "$APP_LOG" 2>/dev/null | \
-       grep -q 'GPU pipeline ready'; then
-    break
-  fi
-  sleep 1
-done
-sleep 20
+    NEW_LOG="$(tail -n "+$((START_LINE + 1))" "$APP_LOG" 2>/dev/null || true)"
 
-NEW_LOG="$(tail -n "+$((START_LINE + 1))" "$APP_LOG" 2>/dev/null || true)"
+    if systemctl is-active --quiet pulsar-kiosk.service &&
+       pgrep -x pulsar-core >/dev/null 2>&1 &&
+       grep -q 'FCU22080658-reference350.txt' <<<"$NEW_LOG" &&
+       grep -q 'FCU22080659-reference350.txt' <<<"$NEW_LOG" &&
+       grep -q 'configured sensor=4024x3036' <<<"$NEW_LOG" &&
+       grep -q 'stream-buffer-mode=NewestOnly acquisition-buffers=2' \
+           <<<"$NEW_LOG" &&
+       grep -q 'GPU pipeline ready' <<<"$NEW_LOG"; then
+        break
+    fi
 
-echo "[6/7] Runtime verification..."
-echo "=== STARTUP ==="
-printf '%s\n' "$NEW_LOG" | grep -E 'stream-buffer-mode=|configured sensor=|GPU pipeline ready|stereo-pairing-mode=' | tail -n 30 || true
-
-echo "=== CAMERA ==="
-printf '%s\n' "$NEW_LOG" | grep -E '(Left|Right) Camera: latency-stats pipeline=' | tail -n 16 || true
-
-echo "=== RENDERER ==="
-printf '%s\n' "$NEW_LOG" | grep -E 'SBS Renderer: latency-stats' | tail -n 12 || true
-
-echo "=== STATE API ==="
-for _ in $(seq 1 10); do
-  curl -sS --max-time 4 -o /dev/null -w 'state_total=%{time_total}\n' http://127.0.0.1:4173/api/state || true
-  sleep .2
+    sleep 1
 done
 
-echo "=== PERIODIC WATCHERS ==="
-pgrep -a -f 'configure-touch.sh.*--watch|watch_display_topology|watch_audio_topology' || true
+sleep 12
 
-echo "=== PROCESS LOAD ==="
-ps -eo pid,pcpu,pmem,rss,comm,args --sort=-pcpu | grep -E 'pulsar-core|Xorg|chrome' | head -n 20 || true
+NEW_LOG_FILE="/tmp/pulsar-reference-authority-new-$TS.log"
+tail -n "+$((START_LINE + 1))" "$APP_LOG" \
+    > "$NEW_LOG_FILE" 2>/dev/null || true
 
-echo "[7/7] Final checks..."
+echo
+echo "[8/8] Verification..."
+
+echo "=== SERVICE ==="
+systemctl is-active pulsar-kiosk.service
+pgrep -a -x pulsar-core
+
+echo
+echo "=== PROFILE IMPORT ==="
+grep -aE \
+    'imported GalaxyView profile|configured sensor=|stream-buffer-mode=|GPU pipeline ready|CPU fallback' \
+    "$NEW_LOG_FILE" |
+    tail -n 60 || true
+
+echo
+echo "=== PERFORMANCE ==="
+grep -aE \
+    '(Left|Right) Camera: latency-stats pipeline=|SBS Renderer: latency-stats' \
+    "$NEW_LOG_FILE" |
+    tail -n 30 || true
+
+echo
+echo "=== ERRORS ==="
+grep -aEi \
+    'GXImportConfigFile failed|required GalaxyView profile|CPU fallback|cuda.*(error|failed)|camera.*timeout|disconnect|reset' \
+    "$NEW_LOG_FILE" |
+    tail -n 40 || true
+
 systemctl is-active --quiet pulsar-kiosk.service
 pgrep -x pulsar-core >/dev/null
-printf '%s\n' "$NEW_LOG" | grep -q 'GPU pipeline ready'
-printf '%s\n' "$NEW_LOG" | grep -q 'stereo-pairing-mode=latest-zero-hold'
 
+grep -q 'FCU22080658-reference350.txt' "$NEW_LOG_FILE"
+grep -q 'FCU22080659-reference350.txt' "$NEW_LOG_FILE"
+
+if [[ "$(grep -c 'configured sensor=4024x3036' "$NEW_LOG_FILE")" -lt 2 ]]; then
+    echo "ERROR: both cameras did not keep the reference full sensor geometry."
+    exit 1
+fi
+
+if [[ "$(grep -c 'GPU pipeline ready' "$NEW_LOG_FILE")" -lt 2 ]]; then
+    echo "ERROR: both camera CUDA pipelines are not ready."
+    exit 1
+fi
+
+if [[ "$(grep -c \
+    'stream-buffer-mode=NewestOnly acquisition-buffers=2' \
+    "$NEW_LOG_FILE")" -lt 2 ]]; then
+    echo "ERROR: low-latency stream policy is not active on both cameras."
+    exit 1
+fi
+
+if grep -aEq \
+    'GXImportConfigFile failed|required GalaxyView profile|CPU fallback' \
+    "$NEW_LOG_FILE"; then
+    echo "ERROR: reference profile or CUDA startup failed."
+    exit 1
+fi
+
+rm -rf "$STAGING"
+rm -f "$NEW_LOG_FILE" "$ROLLBACK_TAR" "$OLD_BINARY"
 trap - ERR
 
+echo
 echo "============================================================"
-echo "FINAL_STATUS=STALL_ROOT_FIX_V2_APPLIED"
-echo "Remote backup: $BACKUP"
-echo "Build log: $BUILD_LOG"
+echo "FINAL_STATUS=REFERENCE_IMAGE_AUTHORITY_V3_ACTIVE"
+echo "Profile SHA256: $EXPECTED_PROFILE_SHA"
+echo "Image owner: imported GalaxyView profile"
+echo "Sensor: 4024x3036 BayerRG8"
+echo "Exposure: 30000 us"
+echo "Gain: 0"
+echo "Black level: 4"
+echo "White balance: 2.25 / 1.0 / 1.73047"
+echo "Throughput: 350000000"
+echo "Latency path: CUDA + NewestOnly + 2 buffers + latest"
+echo "Persistent backup: GitHub tag $PULSAR_BEFORE_TAG"
 echo "============================================================"
-REMOTE_SCRIPT_BODY
+REMOTE
 
-chmod 700 /tmp/pulsar-stall-v2-remote.sh
+chmod 700 /tmp/pulsar-reference-authority-remote.sh
 
 echo
-echo "[4/7] Connecting to $REMOTE_USER@$SERVER..."
+echo "Connecting to $REMOTE_USER@$SERVER ..."
 echo "رمز SSH کاربر matin را یک‌بار وارد کن."
-ssh -M -S "$SOCKET" \
-  -o ControlPersist=300 \
-  -o StrictHostKeyChecking=accept-new \
-  -fnN "$REMOTE_USER@$SERVER"
 
-scp -o ControlPath="$SOCKET" "$PAYLOAD" "$REMOTE_USER@$SERVER:$REMOTE_PAYLOAD"
-scp -o ControlPath="$SOCKET" /tmp/pulsar-stall-v2-remote.sh "$REMOTE_USER@$SERVER:$REMOTE_SCRIPT"
+ssh \
+    -M -S "$SOCKET" \
+    -o ControlPersist=300 \
+    -o StrictHostKeyChecking=accept-new \
+    -fnN "$REMOTE_USER@$SERVER"
 
-echo
-echo "[5/7] Applying and building on server..."
+scp \
+    -o ControlPath="$SOCKET" \
+    "$PAYLOAD" \
+    "$REMOTE_USER@$SERVER:$REMOTE_PAYLOAD"
+
+scp \
+    -o ControlPath="$SOCKET" \
+    /tmp/pulsar-reference-authority-remote.sh \
+    "$REMOTE_USER@$SERVER:$REMOTE_SCRIPT"
+
 set +e
-ssh -o ControlPath="$SOCKET" "$REMOTE_USER@$SERVER" \
-  "PULSAR_ROOT='$REMOTE_ROOT' PULSAR_TS='$TS' PULSAR_PAYLOAD='$REMOTE_PAYLOAD' bash '$REMOTE_SCRIPT'" \
-  2>&1 | tee -a "$LOCAL_LOG"
+ssh \
+    -o ControlPath="$SOCKET" \
+    "$REMOTE_USER@$SERVER" \
+    "PULSAR_ROOT='$REMOTE_ROOT' \
+     PULSAR_TS='$TS' \
+     PULSAR_PAYLOAD='$REMOTE_PAYLOAD' \
+     PULSAR_PROFILE_SHA='$EXPECTED_PROFILE_SHA' \
+     PULSAR_BEFORE_TAG='$BEFORE_TAG' \
+     bash '$REMOTE_SCRIPT'" \
+    2>&1 | tee "$LOCAL_LOG"
+
 STATUS=${PIPESTATUS[0]}
 set -e
 
-if [[ "$STATUS" -ne 0 ]]; then
-  echo "Remote apply failed. Both remote and local sources are being restored."
-  exit "$STATUS"
-fi
-
-SUCCESS=1
-LOCAL_PATCHED=0
-
 echo
 echo "============================================================"
-echo "FINAL_STATUS=STALL_ROOT_FIX_V2_APPLIED"
-echo "Local project was updated permanently."
-echo "Local backup: $LOCAL_BACKUP"
-echo "Report: $LOCAL_LOG"
+echo "Execution log:"
+echo "$LOCAL_LOG"
+echo "GitHub checkpoint tag:"
+echo "$BEFORE_TAG"
+echo "GitHub patch tag:"
+echo "$PATCH_TAG"
 echo "============================================================"
+
+if [[ "$STATUS" -ne 0 ]]; then
+    echo "اصلاح سرور ناموفق بود و سرور به وضعیت موقت قبل برگشت؛ نسخه‌ها در GitHub محفوظ هستند."
+    exit "$STATUS"
+fi
+
+echo
+echo "تغییرات محلی و نسخه نهایی هر دو در GitHub ذخیره شدند."
