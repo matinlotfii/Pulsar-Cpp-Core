@@ -9035,32 +9035,3 @@ input[type="range"] {
     transform: none;
   }
 }
-
-/* Pulsar remote browser: keep mouse cursor visible.
-   The kiosk uses 127.0.0.1 and is intentionally unaffected. */
-html.pulsar-remote-ui,
-html.pulsar-remote-ui body,
-html.pulsar-remote-ui #root,
-html.pulsar-remote-ui #root * {
-  cursor: default !important;
-}
-
-html.pulsar-remote-ui button,
-html.pulsar-remote-ui a,
-html.pulsar-remote-ui [role="button"],
-html.pulsar-remote-ui input[type="button"],
-html.pulsar-remote-ui input[type="submit"],
-html.pulsar-remote-ui input[type="range"],
-html.pulsar-remote-ui select,
-html.pulsar-remote-ui label {
-  cursor: pointer !important;
-}
-
-html.pulsar-remote-ui input[type="text"],
-html.pulsar-remote-ui input[type="number"],
-html.pulsar-remote-ui input[type="search"],
-html.pulsar-remote-ui input[type="password"],
-html.pulsar-remote-ui textarea {
-  cursor: text !important;
-}
-
