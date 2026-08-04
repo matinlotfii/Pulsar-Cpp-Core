@@ -9,3 +9,7 @@ core/config/pulsar.local.env
 core/config/dev-sync.env
 .dev-sync/
 .codex-tmp/
+*.before-*
+__pycache__/
+*.pyc
+*.backup
