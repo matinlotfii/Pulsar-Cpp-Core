@@ -954,8 +954,19 @@ bool CameraDevice::configure() {
   setInt(device_, "OffsetX", 0);
   setInt(device_, "OffsetY", 0);
 
-  setInt(device_, "StreamTransferSize", 64 * 1024);
-  setInt(device_, "StreamTransferNumberUrb", 32);
+  // PULSAR_STREAM_HANDLE_NEWEST_ONLY_V1
+  // Stream nodes belong to GX_DS_HANDLE. Writing them through the device
+  // handle silently left the SDK in OldestFirst/unchanged mode.
+  GX_DS_HANDLE streamHandle = nullptr;
+  const bool haveStreamHandle =
+      GXGetDataStreamHandleFromDev(device_, 0, &streamHandle) == GX_STATUS_SUCCESS &&
+      streamHandle != nullptr;
+  GX_PORT_HANDLE streamPort = haveStreamHandle
+      ? static_cast<GX_PORT_HANDLE>(streamHandle)
+      : static_cast<GX_PORT_HANDLE>(device_);
+
+  setInt(streamPort, "StreamTransferSize", 256 * 1024);
+  setInt(streamPort, "StreamTransferNumberUrb", 64);
   setBool(device_, "FrameStoreCoverActive", true);
   setEnum(device_, "CoverFrameStoreMode", "On");
   applyControls(controls_(), true);
@@ -968,13 +979,13 @@ bool CameraDevice::configure() {
   // Low-latency stream policy. These are host/transport settings only and
   // intentionally override the persistence file's OldestFirst queue policy.
   const char* streamBufferMode = "unchanged";
-  if (setEnum(device_, "StreamBufferHandlingMode", "NewestOnly")) {
+  if (setEnum(streamPort, "StreamBufferHandlingMode", "NewestOnly")) {
     streamBufferMode = "NewestOnly";
-  } else if (setEnum(device_, "StreamBufferHandlingMode", "OldestFirstOverwrite")) {
+  } else if (setEnum(streamPort, "StreamBufferHandlingMode", "OldestFirstOverwrite")) {
     streamBufferMode = "OldestFirstOverwrite";
   }
 
-  constexpr uint64_t kAcquisitionBufferCount = 4;
+  constexpr uint64_t kAcquisitionBufferCount = 2;
   if (GXSetAcqusitionBufferNumber(device_, kAcquisitionBufferCount) != GX_STATUS_SUCCESS) {
     std::cerr << label_ << ": warning: could not set acquisition buffer count\n";
   }

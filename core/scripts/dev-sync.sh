@@ -33,6 +33,7 @@ if [[ "${SYNC_DELETE}" != "1" ]]; then
 fi
 
 EXCLUDES=(
+  "--exclude=.pulsar-backups/"
   "--exclude=.dev-sync/"
   "--exclude=.codex-tmp/"
   "--exclude=core/build/"
@@ -89,6 +90,7 @@ snapshot_tree() {
   cmd+=(
     -path "$ROOT/.dev-sync" -prune -o
     -path "$ROOT/.codex-tmp" -prune -o
+    -path "$ROOT/.pulsar-backups" -prune -o
     -path "$ROOT/core/build" -prune -o
     -path "$ROOT/core/data" -prune -o
     -path "$ROOT/node_modules" -prune -o
@@ -106,7 +108,7 @@ wait_for_change() {
   if command -v inotifywait >/dev/null 2>&1 && [[ "${SYNC_FORCE_POLLING:-0}" != "1" ]]; then
     inotifywait -qq -r \
       -e close_write,create,delete,move \
-      --exclude '(^|/)(\.git|\.dev-sync|\.codex-tmp|node_modules|core/build|core/data|ui/frontend/node_modules|ui/frontend/dist|ui/frontend/\.vite|ui/frontend/\.cache)(/|$)|/core/config/pulsar\.local\.env$' \
+      --exclude '(^|/)(\.git|\.dev-sync|\.codex-tmp|\.pulsar-backups|node_modules|core/build|core/data|ui/frontend/node_modules|ui/frontend/dist|ui/frontend/\.vite|ui/frontend/\.cache)(/|$)|/core/config/pulsar\.local\.env$' \
       "$ROOT"
     sleep "$SYNC_DEBOUNCE_SECONDS"
     return 0

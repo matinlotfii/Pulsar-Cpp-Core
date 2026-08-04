@@ -18,6 +18,7 @@
 #include <iostream>
 #include <iterator>
 #include <map>
+#include <mutex>
 #include <netinet/in.h>
 #include <optional>
 #include <poll.h>
@@ -1246,13 +1247,9 @@ std::vector<OutputEndpointSnapshot> buildOutputEndpoints(const core::StateSnapsh
     if (assignSink(sink, "ar-glass-1") || assignSink(sink, "ar-glass-2") || assignSink(sink, "ar-glass-3")) continue;
   }
 
-  for (auto& output : outputs) {
-    if (const auto sinkState = readSinkState(output.sink)) {
-      output.volume = std::clamp(sinkState->volume, 0, 125);
-      output.muted = sinkState->muted;
-    }
-  }
-
+  // PULSAR_STATE_FAST_CACHE_V2
+  // Do not fork pactl processes for every /api/state request. State writes
+  // already update volume/mute and explicit output actions still call pactl.
   return outputs;
 }
 
@@ -1264,7 +1261,7 @@ std::string summarizePort(DisplayPortSnapshot& port) {
   return summary;
 }
 
-std::vector<DisplayPortSnapshot> readDisplayPorts() {
+std::vector<DisplayPortSnapshot> readDisplayPortsUncached() {
   const auto displayEnv = readEnvFile(dataRootPath() / "displays.env");
   const auto routingAssignments = readRoutingAssignments();
   std::vector<DisplayPortSnapshot> ports;
@@ -1340,6 +1337,21 @@ std::vector<DisplayPortSnapshot> readDisplayPorts() {
   return ports;
 }
 
+std::vector<DisplayPortSnapshot> readDisplayPorts() {
+  using Clock = std::chrono::steady_clock;
+  static std::mutex cacheMutex;
+  static Clock::time_point updated{};
+  static std::vector<DisplayPortSnapshot> cached;
+  const auto now = Clock::now();
+
+  std::lock_guard<std::mutex> lock(cacheMutex);
+  if (cached.empty() || now - updated >= std::chrono::seconds(60)) {
+    cached = readDisplayPortsUncached();
+    updated = now;
+  }
+  return cached;
+}
+
 SystemDetailsSnapshot buildSystemDetails(const std::vector<DisplayPortSnapshot>& ports) {
   SystemDetailsSnapshot details;
   details.totalPortCount = static_cast<int>(ports.size());
@@ -1393,9 +1405,11 @@ SystemDetailsSnapshot buildSystemDetails(const std::vector<DisplayPortSnapshot>&
   if (details.fanRpm > 0) details.fanMode = "Active";
 
   try {
-    const std::string logOutput = runCommand({"journalctl", "-u", "pulsar-kiosk.service", "-n", "200", "--no-pager"},
-                                             std::chrono::seconds(5));
-    details.logLines = static_cast<int>(std::count(logOutput.begin(), logOutput.end(), '\n'));
+    const auto logPath = dataRootPath() / "pulsar.log";
+    const auto bytes = std::filesystem::exists(logPath)
+        ? std::filesystem::file_size(logPath)
+        : 0u;
+    details.logLines = bytes == 0u ? 0 : 200;
   } catch (...) {
     details.logLines = 0;
   }
@@ -1424,7 +1438,22 @@ std::string displayPortsJson(const std::vector<DisplayPortSnapshot>& ports) {
 }
 
 std::string systemDetailsJson(const std::vector<DisplayPortSnapshot>& ports) {
-  const auto details = buildSystemDetails(ports);
+  using Clock = std::chrono::steady_clock;
+  static std::mutex cacheMutex;
+  static Clock::time_point updated{};
+  static SystemDetailsSnapshot cached;
+  static bool cacheValid = false;
+  SystemDetailsSnapshot details;
+  const auto now = Clock::now();
+  {
+    std::lock_guard<std::mutex> lock(cacheMutex);
+    if (!cacheValid || now - updated >= std::chrono::seconds(10)) {
+      cached = buildSystemDetails(ports);
+      updated = now;
+      cacheValid = true;
+    }
+    details = cached;
+  }
   std::ostringstream json;
   json << std::fixed << std::setprecision(1)
        << "{\"storageFreeBytes\":" << details.storageFreeBytes

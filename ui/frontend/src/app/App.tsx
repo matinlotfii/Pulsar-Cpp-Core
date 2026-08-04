@@ -172,7 +172,7 @@ function AppRoot() {
       }
     };
     void loadBackendState();
-    const refreshMs = activePage === "system" || activePage === "display-settings" ? 2000 : 6000;
+    const refreshMs = activePage === "system" || activePage === "display-settings" ? 5000 : 15000;
     const timer = window.setInterval(loadBackendState, refreshMs);
     return () => {
       window.clearInterval(timer);

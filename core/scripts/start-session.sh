@@ -9,6 +9,7 @@ openbox_pid=""
 unclutter_pid=""
 display_watch_pid=""
 audio_watch_pid=""
+touch_watch_pid=""
 touch_log_file="$PULSAR_DATA_DIR/touch.log"
 session_shell_pid_file="$PULSAR_DATA_DIR/session-shell.pid"
 
@@ -17,7 +18,7 @@ place_sbs_window() {
 }
 
 cleanup() {
-  kill "$audio_watch_pid" "$display_watch_pid" "$browser_pid" "$core_pid" "$openbox_pid" "$unclutter_pid" 2>/dev/null || true
+  kill "$touch_watch_pid" "$audio_watch_pid" "$display_watch_pid" "$browser_pid" "$core_pid" "$openbox_pid" "$unclutter_pid" 2>/dev/null || true
   rm -f "$PULSAR_PID_FILE"
   rm -f "$session_shell_pid_file"
 }
@@ -250,7 +251,11 @@ openbox_pid=$!
 sleep .4
 configure_audio_stack
 : >"$touch_log_file"
-"$PULSAR_ROOT/core/scripts/configure-touch.sh" --watch --interval 2 >>"$touch_log_file" 2>&1 &
+"$PULSAR_ROOT/core/scripts/configure-touch.sh" >>"$touch_log_file" 2>&1 || true
+if [[ "${PULSAR_TOUCH_HOTPLUG_WATCH:-0}" == "1" ]]; then
+  "$PULSAR_ROOT/core/scripts/configure-touch.sh" --watch --interval 30 >>"$touch_log_file" 2>&1 &
+  touch_watch_pid=$!
+fi
 
 if [[ -f "$PULSAR_PID_FILE" ]] && kill -0 "$(cat "$PULSAR_PID_FILE")" 2>/dev/null; then
   kill "$(cat "$PULSAR_PID_FILE")" || true
