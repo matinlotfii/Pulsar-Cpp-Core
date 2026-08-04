@@ -6,14 +6,12 @@ REMOTE_USER="${PULSAR_REMOTE_USER:-matin}"
 REMOTE_ROOT="${PULSAR_REMOTE_ROOT:-/home/matin/Pulsar-Cpp-Core}"
 LOCAL_ROOT="${PULSAR_LOCAL_ROOT:-$PWD}"
 TS="$(date +%Y%m%d-%H%M%S)"
-SOCKET="/tmp/pulsar-rtx-direct-v5-${USER}-$$"
-LOCAL_LOG="$HOME/Downloads/pulsar-rtx-direct-v5-$TS.log"
-STAGE="/tmp/pulsar-rtx-direct-v5-$TS"
-ARCHIVE="/tmp/pulsar-rtx-direct-v5-$TS.tar.gz"
-REMOTE_ARCHIVE="/tmp/pulsar-rtx-direct-v5-$TS.tar.gz"
-REMOTE_SCRIPT="/tmp/pulsar-rtx-direct-v5-$TS.sh"
-BEFORE_TAG="pulsar-before-rtx-direct-v5-$TS"
-AFTER_TAG="pulsar-rtx-direct-v5-$TS"
+SOCKET="/tmp/pulsar-rtx-direct-v5-no-git-${USER}-$$"
+LOCAL_LOG="$HOME/Downloads/pulsar-rtx-direct-v5-no-git-$TS.log"
+STAGE="/tmp/pulsar-rtx-direct-v5-no-git-$TS"
+ARCHIVE="/tmp/pulsar-rtx-direct-v5-no-git-$TS.tar.gz"
+REMOTE_ARCHIVE="/tmp/pulsar-rtx-direct-v5-no-git-$TS.tar.gz"
+REMOTE_SCRIPT="/tmp/pulsar-rtx-direct-v5-no-git-$TS.sh"
 
 REFERENCE_PROFILE_SHA="a468f20e304e9543d4dc7aeb03b508a01e5257a8a3acdc59f81e11dba673c3f6"
 LOW_LATENCY_PROFILE_SHA="99db3367af2a09dfee95656cf157aec16444ed617efc54530594760655360018"
@@ -46,42 +44,18 @@ fail() {
 [[ -f "$LOCAL_ROOT/core/scripts/common.sh" ]] ||
     fail "common.sh پیدا نشد."
 
-git -C "$LOCAL_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
-    fail "پروژه Git نیست."
-
 cd "$LOCAL_ROOT"
-BRANCH="$(git branch --show-current)"
-[[ -n "$BRANCH" ]] || fail "Git روی detached HEAD است."
-git remote get-url origin >/dev/null 2>&1 ||
-    fail "Git remote origin پیدا نشد."
 
 echo "============================================================"
-echo "PULSAR RTX DIRECT LOW-LATENCY V5"
+echo "PULSAR RTX DIRECT LOW-LATENCY V5 NO-GIT"
 echo "Quality and anti-flicker settings are locked."
 echo "Local project: $LOCAL_ROOT"
 echo "Server: $REMOTE_USER@$SERVER"
-echo "GitHub rollback tag: $BEFORE_TAG"
+echo "Git/backup: disabled by request"
 echo "============================================================"
 
 echo
-echo "[1/9] Saving the current project state to GitHub..."
-
-git add -A
-if ! git diff --cached --quiet; then
-    git commit -m "Checkpoint before RTX direct low-latency V5 [$TS]"
-fi
-
-BEFORE_COMMIT="$(git rev-parse HEAD)"
-git tag -a "$BEFORE_TAG" "$BEFORE_COMMIT" \
-    -m "Before RTX direct low-latency V5 $TS"
-git push origin "$BRANCH"
-git push origin "$BEFORE_TAG"
-
-echo "Before commit: $BEFORE_COMMIT"
-echo "Before tag: $BEFORE_TAG"
-
-echo
-echo "[2/9] Installing the locked visual profile and single renderer locally..."
+echo "[1/7] Installing the locked visual profile and single renderer locally..."
 
 rm -rf "$STAGE"
 mkdir -p \
@@ -164,7 +138,7 @@ grep -q 'PULSAR_REFERENCE_PROFILE_AUTHORITY_V2' \
     fail "محافظ کیفیت مرجع در CameraDevice.cpp فعال نیست."
 
 echo
-echo "[3/9] Applying low-latency configuration without changing image controls..."
+echo "[2/7] Applying low-latency configuration without changing image controls..."
 
 python3 - \
     "$LOCAL_ROOT/core/config/pulsar.env" \
@@ -244,36 +218,12 @@ cp -a "$LOCAL_ROOT/core/config/pulsar.local.env" \
     "$STAGE/core/config/pulsar.local.env"
 
 echo
-echo "[4/9] Committing the final source to GitHub..."
-
-git add \
-    camera/src/SbsRenderer.cpp \
-    camera/profiles/FCU22080658-reference350-realtime.txt \
-    camera/profiles/FCU22080659-reference350-realtime.txt \
-    core/scripts/configure-displays.sh \
-    core/config/pulsar.env \
-    core/config/pulsar.local.env
-
-if git diff --cached --quiet; then
-    AFTER_COMMIT="$(git rev-parse HEAD)"
-else
-    git commit -m \
-        "Route one realtime SBS render directly to all RTX outputs [$TS]"
-    AFTER_COMMIT="$(git rev-parse HEAD)"
-fi
-
-git tag -a "$AFTER_TAG" "$AFTER_COMMIT" \
-    -m "RTX direct single-render low-latency V5 $TS"
-
-git push origin "$BRANCH"
-git push origin "$AFTER_TAG"
-
-echo "After commit: $AFTER_COMMIT"
-echo "After tag: $AFTER_TAG"
+echo
+echo "[3/7] Creating deployment payload without Git or backup..."
 
 tar -C "$STAGE" -czf "$ARCHIVE" .
 
-cat > /tmp/pulsar-rtx-direct-v5-remote.sh <<'REMOTE'
+cat > /tmp/pulsar-rtx-direct-v5-no-git-remote.sh <<'REMOTE'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
@@ -284,53 +234,23 @@ REFERENCE_PROFILE_SHA="${PULSAR_REFERENCE_PROFILE_SHA:?}"
 LOW_LATENCY_PROFILE_SHA="${PULSAR_LOW_LATENCY_PROFILE_SHA:?}"
 RENDERER_SHA="${PULSAR_RENDERER_SHA:?}"
 DISPLAY_SCRIPT_SHA="${PULSAR_DISPLAY_SHA:?}"
-BEFORE_TAG="${PULSAR_BEFORE_TAG:?}"
-AFTER_TAG="${PULSAR_AFTER_TAG:?}"
-
 STAGE="/tmp/pulsar-rtx-direct-stage-$TS"
 BUILD_DIR="$ROOT/core/build-rtx-direct-$TS"
 APP_LOG="$ROOT/core/data/pulsar.log"
 CURRENT_BINARY="$ROOT/core/build/pulsar-core"
-OLD_BINARY="/tmp/pulsar-core-before-rtx-v5-$TS"
-OLD_FILES="/tmp/pulsar-files-before-rtx-v5-$TS.tar.gz"
-FILES_INSTALLED=0
-BINARY_INSTALLED=0
+WORK_ROOT="/tmp/pulsar-rtx-direct-work-$TS"
 
 cleanup() {
-    rm -rf "$STAGE" "$BUILD_DIR"
-    rm -f "$OLD_BINARY" "$OLD_FILES" "$ARCHIVE"
+    rm -rf "$STAGE" "$BUILD_DIR" "$WORK_ROOT"
+    rm -f "$ARCHIVE"
 }
-
-rollback() {
-    status=$?
-    trap - ERR
-    echo
-    echo "ERROR: deployment failed; restoring the previous running version..."
-
-    if [[ "$FILES_INSTALLED" == "1" && -f "$OLD_FILES" ]]; then
-        tar -C "$ROOT" -xzf "$OLD_FILES" || true
-    fi
-
-    if [[ "$BINARY_INSTALLED" == "1" && -x "$OLD_BINARY" ]]; then
-        install -m 0755 "$OLD_BINARY" "$CURRENT_BINARY" || true
-    fi
-
-    if [[ "$FILES_INSTALLED" == "1" || "$BINARY_INSTALLED" == "1" ]]; then
-        sudo -n systemctl restart pulsar-kiosk.service >/dev/null 2>&1 || true
-    fi
-
-    echo "Permanent rollback tag: $BEFORE_TAG"
-    cleanup
-    exit "$status"
-}
-trap rollback ERR
 trap cleanup EXIT
 
 mkdir -p "$STAGE" "$ROOT/core/data"
 tar -C "$STAGE" -xzf "$ARCHIVE"
 
 echo
-echo "[5/9] Validating payload and current camera hardware..."
+echo "[4/7] Validating payload and current camera hardware..."
 
 [[ "$(sha256sum "$STAGE/camera/src/SbsRenderer.cpp" | awk '{print $1}')" == "$RENDERER_SHA" ]]
 [[ "$(sha256sum "$STAGE/core/scripts/configure-displays.sh" | awk '{print $1}')" == "$DISPLAY_SCRIPT_SHA" ]]
@@ -392,42 +312,41 @@ else
 fi
 
 echo
-echo "[6/9] Installing source and building CUDA/NPP while the old kiosk stays active..."
+echo "[5/7] Building CUDA/NPP in an isolated temporary tree..."
 
-tar -C "$ROOT" -czf "$OLD_FILES" \
-    camera/src/SbsRenderer.cpp \
-    camera/profiles/FCU22080658-reference350-realtime.txt \
-    camera/profiles/FCU22080659-reference350-realtime.txt \
-    core/scripts/configure-displays.sh \
-    core/config/pulsar.env \
-    core/config/pulsar.local.env \
-    2>/dev/null || true
+rm -rf "$WORK_ROOT" "$BUILD_DIR"
+mkdir -p "$WORK_ROOT"
 
-[[ -x "$CURRENT_BINARY" ]] && cp -a "$CURRENT_BINARY" "$OLD_BINARY"
+# Copy the source into a disposable build tree. No backup is created.
+rsync -a \
+    --exclude='.git/' \
+    --exclude='.pulsar-backups/' \
+    --exclude='core/build*/' \
+    --exclude='core/data/' \
+    "$ROOT/" "$WORK_ROOT/"
 
 cp -a "$STAGE/camera/src/SbsRenderer.cpp" \
-    "$ROOT/camera/src/SbsRenderer.cpp"
+    "$WORK_ROOT/camera/src/SbsRenderer.cpp"
 
 cp -a "$STAGE/camera/profiles/"*.txt \
-    "$ROOT/camera/profiles/"
+    "$WORK_ROOT/camera/profiles/"
 
 cp -a "$STAGE/core/scripts/configure-displays.sh" \
-    "$ROOT/core/scripts/configure-displays.sh"
+    "$WORK_ROOT/core/scripts/configure-displays.sh"
 
 cp -a "$STAGE/core/config/pulsar.env" \
-    "$ROOT/core/config/pulsar.env"
+    "$WORK_ROOT/core/config/pulsar.env"
 
 cp -a "$STAGE/core/config/pulsar.local.env" \
-    "$ROOT/core/config/pulsar.local.env"
+    "$WORK_ROOT/core/config/pulsar.local.env"
 
-chmod +x "$ROOT/core/scripts/configure-displays.sh"
-bash -n "$ROOT/core/scripts/configure-displays.sh"
-FILES_INSTALLED=1
+chmod +x "$WORK_ROOT/core/scripts/configure-displays.sh"
+bash -n "$WORK_ROOT/core/scripts/configure-displays.sh"
 
-rm -rf "$BUILD_DIR"
+BUILD_DIR="$WORK_ROOT/core/build-rtx-direct"
 
 cmake \
-    -S "$ROOT" \
+    -S "$WORK_ROOT" \
     -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CUDA_COMPILER=/usr/local/cuda-13.2/bin/nvcc \
@@ -438,13 +357,19 @@ cmake --build "$BUILD_DIR" -j"$(nproc)"
 test -x "$BUILD_DIR/pulsar-core"
 ldd "$BUILD_DIR/pulsar-core" | grep -q 'libcudart'
 ! ldd "$BUILD_DIR/pulsar-core" | grep -q 'not found'
-
 echo
-echo "[7/9] Atomically installing and restarting once..."
+echo "[6/7] Installing only after successful build, then restarting once..."
+
+# The build is complete. Apply source/configuration and binary now.
+cp -a "$STAGE/camera/src/SbsRenderer.cpp"     "$ROOT/camera/src/SbsRenderer.cpp"
+cp -a "$STAGE/camera/profiles/"*.txt     "$ROOT/camera/profiles/"
+cp -a "$STAGE/core/scripts/configure-displays.sh"     "$ROOT/core/scripts/configure-displays.sh"
+cp -a "$STAGE/core/config/pulsar.env"     "$ROOT/core/config/pulsar.env"
+cp -a "$STAGE/core/config/pulsar.local.env"     "$ROOT/core/config/pulsar.local.env"
+chmod +x "$ROOT/core/scripts/configure-displays.sh"
 
 mkdir -p "$ROOT/core/build"
 install -m 0755 "$BUILD_DIR/pulsar-core" "$CURRENT_BINARY"
-BINARY_INSTALLED=1
 
 PRE_RESTART_LINE="$(wc -l < "$APP_LOG" 2>/dev/null || echo 0)"
 sudo -n systemctl restart pulsar-kiosk.service
@@ -472,7 +397,7 @@ STEADY_LOG="/tmp/pulsar-rtx-v5-steady-$TS.log"
 tail -n "+$((READY_LINE + 1))" "$APP_LOG" > "$STEADY_LOG" 2>/dev/null || true
 
 echo
-echo "[8/9] Verifying RTX outputs and the single render target..."
+echo "[7/7] Verifying RTX outputs and the single render target..."
 
 DISPLAY=:0 XAUTHORITY=/home/matin/.Xauthority \
     xrandr --query || true
@@ -531,7 +456,7 @@ if grep -aEq \
 fi
 
 echo
-echo "[9/9] Calculating actual post-ready latency..."
+echo "[POST] Calculating actual post-ready latency..."
 
 python3 - "$STEADY_LOG" <<'PY'
 from pathlib import Path
@@ -609,10 +534,6 @@ print(
 )
 PY
 
-FILES_INSTALLED=0
-BINARY_INSTALLED=0
-trap - ERR
-
 echo
 echo "============================================================"
 echo "FINAL_STATUS=RTX_DIRECT_SINGLE_RENDER_ACTIVE"
@@ -623,12 +544,11 @@ echo "Renderer targets: 1"
 echo "RTX outputs: hardware-cloned by XRandR"
 echo "VSync wait: disabled"
 echo "Pairing: latest-zero-hold"
-echo "GitHub before tag: $BEFORE_TAG"
-echo "GitHub after tag: $AFTER_TAG"
+echo "Git/backup: disabled"
 echo "============================================================"
 REMOTE
 
-chmod 700 /tmp/pulsar-rtx-direct-v5-remote.sh
+chmod 700 /tmp/pulsar-rtx-direct-v5-no-git-remote.sh
 
 echo
 echo "Connecting to $REMOTE_USER@$SERVER ..."
@@ -645,7 +565,7 @@ scp -o ControlPath="$SOCKET" \
     "$REMOTE_USER@$SERVER:$REMOTE_ARCHIVE"
 
 scp -o ControlPath="$SOCKET" \
-    /tmp/pulsar-rtx-direct-v5-remote.sh \
+    /tmp/pulsar-rtx-direct-v5-no-git-remote.sh \
     "$REMOTE_USER@$SERVER:$REMOTE_SCRIPT"
 
 set +e
@@ -658,8 +578,6 @@ ssh -o ControlPath="$SOCKET" \
      PULSAR_LOW_LATENCY_PROFILE_SHA='$LOW_LATENCY_PROFILE_SHA' \
      PULSAR_RENDERER_SHA='$RENDERER_SHA' \
      PULSAR_DISPLAY_SHA='$DISPLAY_SCRIPT_SHA' \
-     PULSAR_BEFORE_TAG='$BEFORE_TAG' \
-     PULSAR_AFTER_TAG='$AFTER_TAG' \
      bash '$REMOTE_SCRIPT'" \
     2>&1 | tee "$LOCAL_LOG"
 
@@ -670,11 +588,10 @@ echo
 echo "============================================================"
 echo "گزارش اجرا:"
 echo "$LOCAL_LOG"
-echo "GitHub rollback tag:"
-echo "$BEFORE_TAG"
+echo "Git/backup: disabled"
 echo "============================================================"
 
 if [[ "$STATUS" -ne 0 ]]; then
-    echo "اصلاح ناموفق بود و نسخه‌ی قبلی اجرا شد."
+    echo "اصلاح ناموفق بود؛ گزارش بالا را بررسی کن."
     exit "$STATUS"
 fi
