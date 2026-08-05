@@ -118,6 +118,7 @@ ensure_run_sync_target() {
   upsert_sync_config_value "$config" "SYNC_REMOTE_BUILD_UI_ON_SYNC" "1"
   upsert_sync_config_value "$config" "SYNC_REMOTE_BUILD_ON_SYNC" "1"
   upsert_sync_config_value "$config" "SYNC_REMOTE_RESTART_ON_SYNC" "1"
+  upsert_sync_config_value "$config" "SYNC_REMOTE_REFRESH_SERVICE_ON_SYNC" "0"
   upsert_sync_config_value "$config" "SYNC_INCLUDE_LOCAL_CONFIG" "1"
 }
 

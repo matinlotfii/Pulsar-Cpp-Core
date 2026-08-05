@@ -89,9 +89,12 @@ run_remote_apply() {
   fi
 
   if [[ "${SYNC_REMOTE_RESTART_ON_SYNC:-1}" == "1" ]]; then
-    # Refresh the generated unit every deploy. The unit contains absolute paths,
-    # so merely restarting an older unit can launch a stale project directory.
-    remote_script+="; sudo -n env PULSAR_RUN_USER=${user_q} ${root_q}/core/scripts/install-service.sh --refresh"
+    # Normal source deploys reuse the already-installed systemd unit. Refreshing
+    # a root-owned service from a script inside the writable project tree is both
+    # unnecessary and unsafe. Opt in only after changing the unit definition.
+    if [[ "${SYNC_REMOTE_REFRESH_SERVICE_ON_SYNC:-0}" == "1" ]]; then
+      remote_script+="; sudo -n env PULSAR_RUN_USER=${user_q} ${root_q}/core/scripts/install-service.sh --refresh"
+    fi
     remote_script+="; sudo -n systemctl reset-failed ${service_q} || true"
     remote_script+="; sudo -n systemctl restart ${service_q}"
     remote_script+="; ready=0"
