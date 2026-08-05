@@ -103,6 +103,9 @@ run_remote_apply() {
     remote_script+="; echo '===== processes/port =====' >&2; ps -ef | grep -E '[X]org|[p]ulsar-core|[c]hrome|[c]hromium' >&2 || true; ss -ltnp | grep ':4173' >&2 || true"
     remote_script+="; exit 1; fi"
     remote_script+="; echo 'Pulsar health: OK'; curl -fsS http://127.0.0.1:4173/health; echo"
+    # PULSAR_REMOTE_DISPLAY_VERIFY_V1
+    # HTTP health does not prove that the NVIDIA outputs have active CRTCs.
+    remote_script+="; DISPLAY=:0 ${root_q}/core/scripts/verify-displays.sh"
   fi
 
   ssh "${SSH_OPTS[@]}" "$REMOTE" "bash -lc $(printf '%q' "$remote_script")"

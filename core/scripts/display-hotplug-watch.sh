@@ -66,6 +66,17 @@ if nice -n 18 ionice -c3 "$PULSAR_ROOT/core/scripts/configure-displays.sh" >>"$P
   printf '%s\n'     "Pulsar display hotplug: initial settled topology applied."     >>"$PULSAR_LOG_FILE"
 fi
 
+# PULSAR_WATCHER_INITIAL_REAPPLY_V1
+# NVIDIA can expose DP after the first session configure pass. Reapply before
+# recording the baseline so "connected but inactive" is never accepted.
+if nice -n 18 ionice -c3 \
+  "$PULSAR_ROOT/core/scripts/configure-displays.sh" \
+  >>"$PULSAR_LOG_FILE" 2>&1; then
+  printf '%s\n' \
+    "Pulsar display hotplug: initial RTX topology reapplied before baseline." \
+    >>"$PULSAR_LOG_FILE"
+fi
+
 initial="$(signature || true)"
 [[ -n "$initial" ]] && printf '%s' "$initial" >"$LAST_FILE"
 

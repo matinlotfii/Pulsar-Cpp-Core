@@ -243,8 +243,66 @@ watch_audio_topology() {
   done
 }
 
-"$PULSAR_ROOT/core/scripts/configure-displays.sh"
-reload_display_env
+# PULSAR_DISPLAY_STARTUP_SETTLE_V1
+output_is_active() {
+  local output="$1"
+  xrandr --query 2>/dev/null |
+    awk -v wanted="$output" '
+      $1 == wanted && $2 == "connected" {
+        for (i=3; i<=NF; i++) {
+          if ($i ~ /^[0-9]+x[0-9]+\+[0-9]+\+[0-9]+/) found=1
+        }
+      }
+      END { exit found ? 0 : 1 }
+    '
+}
+
+configured_outputs_ready() {
+  local role output connected
+
+  output="${PULSAR_SETTINGS_OUTPUT:-}"
+  [[ -n "$output" ]] && output_is_active "$output" || return 1
+
+  for role in DISPLAY AR1 AR2; do
+    eval "output=\${PULSAR_ROLE_${role}_OUTPUT:-}"
+    [[ -n "$output" ]] || continue
+    eval "connected=\${PULSAR_ROLE_${role}_CONNECTED:-0}"
+    [[ "$connected" == "1" ]] || return 1
+    output_is_active "$output" || return 1
+  done
+  return 0
+}
+
+settle_configured_displays() {
+  local attempts="${PULSAR_DISPLAY_STARTUP_ATTEMPTS:-60}"
+  local delay="${PULSAR_DISPLAY_STARTUP_DELAY:-0.5}"
+  local attempt
+
+  for attempt in $(seq 1 "$attempts"); do
+    if "$PULSAR_ROOT/core/scripts/configure-displays.sh" \
+        >>"$PULSAR_LOG_FILE" 2>&1; then
+      reload_display_env
+      if [[ "${PULSAR_REQUIRE_CONFIGURED_DISPLAYS:-0}" != "1" ]] ||
+         configured_outputs_ready; then
+        printf '%s\n' \
+          "Pulsar display startup: topology ready on attempt ${attempt}." \
+          >>"$PULSAR_LOG_FILE"
+        return 0
+      fi
+    fi
+    sleep "$delay"
+  done
+
+  printf '%s\n' \
+    "Pulsar display startup: configured outputs did not become active." \
+    >>"$PULSAR_LOG_FILE"
+  xrandr --query >>"$PULSAR_LOG_FILE" 2>&1 || true
+  cat "$PULSAR_DATA_DIR/displays.env" >>"$PULSAR_LOG_FILE" 2>&1 || true
+  return 1
+}
+
+settle_configured_displays ||
+  die "Configured monitor/glasses did not become active."
 
 # Start the window manager before native/browser windows so placement and
 # fullscreen state are deterministic on Ubuntu Server Xorg sessions.

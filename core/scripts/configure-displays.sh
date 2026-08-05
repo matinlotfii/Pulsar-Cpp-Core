@@ -91,9 +91,13 @@ if [[ -z "$settings" ]] || ! is_connected "$settings"; then
 fi
 
 # Exactly three independent camera endpoints: one monitor and two glasses.
-display="${PULSAR_ROLE_DISPLAY_OUTPUT:-}"
-ar1="${PULSAR_ROLE_AR1_OUTPUT:-}"
-ar2="${PULSAR_ROLE_AR2_OUTPUT:-}"
+# PULSAR_STABLE_ROLE_PREFERENCES_V1
+# Generated role routing has priority; persistent preferred outputs are the
+# fallback. Known-but-late NVIDIA connectors remain assigned until their modes
+# become available.
+display="${PULSAR_ROLE_DISPLAY_OUTPUT:-${PULSAR_PREFERRED_MAIN_OUTPUT:-}}"
+ar1="${PULSAR_ROLE_AR1_OUTPUT:-${PULSAR_PREFERRED_AR_OUTPUT:-}}"
+ar2="${PULSAR_ROLE_AR2_OUTPUT:-${PULSAR_PREFERRED_AR2_OUTPUT:-}}"
 
 valid_role_connector() {
   [[ -n "$1" ]] && is_known "$1" && [[ "$1" != "$settings" ]]
