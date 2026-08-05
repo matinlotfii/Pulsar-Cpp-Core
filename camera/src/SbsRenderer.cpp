@@ -819,11 +819,29 @@ void SbsRenderer::loop() {
     const auto state = state_.snapshot();
     const std::array<CameraStatus, 2> latest{{cameras_.snapshot(0), cameras_.snapshot(1)}};
     const auto paired = chooseStereoPair(stereoPair, latest, pairingMode);
+
+    // PULSAR_DEGRADED_MONO_FALLBACK_V1
+    // If one USB camera is unavailable, duplicate the healthy camera onto all
+    // physical outputs. True stereo resumes automatically when both return.
+    auto renderPair = paired;
+    auto renderControls = state.cameras;
+    const bool degradedMono =
+        static_cast<bool>(paired[0].frame) !=
+        static_cast<bool>(paired[1].frame);
+
+    if (!renderPair[0].frame && renderPair[1].frame) {
+      renderPair[0] = renderPair[1];
+      renderControls[0] = renderControls[1];
+    } else if (!renderPair[1].frame && renderPair[0].frame) {
+      renderPair[1] = renderPair[0];
+      renderControls[1] = renderControls[0];
+    }
+
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
 
-    const uint64_t leftFrameId = paired[0].frame ? paired[0].frame->id : 0ULL;
-    const uint64_t rightFrameId = paired[1].frame ? paired[1].frame->id : 0ULL;
+    const uint64_t leftFrameId = renderPair[0].frame ? renderPair[0].frame->id : 0ULL;
+    const uint64_t rightFrameId = renderPair[1].frame ? renderPair[1].frame->id : 0ULL;
     const uint64_t compositeKey = (leftFrameId * 0x9E3779B185EBCA87ULL) ^ rightFrameId;
 
     for (const auto& viewerPanel : panels) {
@@ -849,13 +867,13 @@ void SbsRenderer::loop() {
         const auto [alignXRatio, alignYRatio] =
             stereoAlignRatios(state.display, cameraIndex);
         renderFrame(
-            renderer, uploader, textures[cameraIndex], paired[cameraIndex],
-            state.cameras[cameraIndex], panel, mirror,
+            renderer, uploader, textures[cameraIndex], renderPair[cameraIndex],
+            renderControls[cameraIndex], panel, mirror,
             static_cast<uint8_t>(cameraIndex * 23u),
             alignXRatio, alignYRatio);
       } else if (isLineInterleavedMode(state.display, profileIndex)) {
         composeLineInterleaved(
-            textures[0], textures[1], paired, state.cameras, state.display,
+            textures[0], textures[1], renderPair, renderControls, state.display,
             static_cast<uint32_t>(panel.w), static_cast<uint32_t>(panel.h),
             lineInterleaved, leftOffline, rightOffline, leftCrop, rightCrop,
             leftScaled, rightScaled);
@@ -872,8 +890,8 @@ void SbsRenderer::loop() {
           const auto [alignXRatio, alignYRatio] =
               stereoAlignRatios(state.display, cameraIndex);
           renderFrame(
-              renderer, uploader, textures[cameraIndex], paired[cameraIndex],
-              state.cameras[cameraIndex], destinations[side], mirror,
+              renderer, uploader, textures[cameraIndex], renderPair[cameraIndex],
+              renderControls[cameraIndex], destinations[side], mirror,
               static_cast<uint8_t>(cameraIndex * 23u),
               alignXRatio, alignYRatio);
         }
@@ -947,6 +965,7 @@ void SbsRenderer::loop() {
 
       std::cerr << "SBS Renderer: latency-stats"
                 << " pairing-mode=" << stereoPairingModeName(pairingMode)
+                << " degraded-mono=" << (degradedMono ? 1 : 0)
                 << " loop-fps=" << (static_cast<double>(reportLoops) / reportElapsed.count())
                 << " left-host-age-ms=" << (leftAgeMsSum / ageDivisor)
                 << " right-host-age-ms=" << (rightAgeMsSum / ageDivisor)

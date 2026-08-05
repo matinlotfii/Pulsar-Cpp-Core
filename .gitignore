@@ -20,3 +20,8 @@ tree.txt
 run-logs/
 pulsar-*-diagnostics-*.tar.gz
 pulsar-camera-render-touch-*.tar.gz
+/pulsar-root-repair.sh
+/pulsar-*-diagnose.sh
+/pulsar-*-diagnostics-*.tar.gz
+/pulsar-*-report-*.txt
+/pulsar-*.sha256

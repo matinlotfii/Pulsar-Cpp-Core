@@ -3,98 +3,74 @@ set -Eeuo pipefail
 source "$(dirname "$0")/common.sh"
 load_config
 
-LOCK_FILE="$PULSAR_DATA_DIR/display-hotplug.lock"
-LAST_FILE="$PULSAR_DATA_DIR/display-hotplug.signature"
-PID_FILE="$PULSAR_DATA_DIR/display-hotplug.pid"
-INTERVAL="${PULSAR_DISPLAY_HOTPLUG_FALLBACK_INTERVAL:-5}"
-DEBOUNCE="${PULSAR_DISPLAY_HOTPLUG_DEBOUNCE_SECONDS:-0.35}"
+lock="$PULSAR_DATA_DIR/display-hotplug.lock"
+pid="$PULSAR_DATA_DIR/display-hotplug.pid"
+interval="${PULSAR_DISPLAY_HOTPLUG_INTERVAL:-1}"
+debounce="${PULSAR_DISPLAY_HOTPLUG_DEBOUNCE_SAMPLES:-2}"
 mkdir -p "$PULSAR_DATA_DIR"
-echo "$$" >"$PID_FILE"
-
-cleanup() {
-  rm -f "$PID_FILE"
-  [[ -n "${fallback_pid:-}" ]] && kill "$fallback_pid" 2>/dev/null || true
-}
-trap cleanup EXIT INT TERM
+echo "$$" >"$pid"
+exec 9>"$lock"
+trap 'rm -f "$pid"' EXIT INT TERM
 
 signature() {
-  timeout 2 xrandr --query 2>/dev/null |
-    awk '$2=="connected" || $2=="disconnected" {print $1 "|" $2 "|" $0}' |
-    LC_ALL=C sort |
-    sha256sum | awk '{print $1}'
+  timeout 5 xrandr --prop 2>/dev/null |
+    awk '
+      $2=="connected"||$2=="disconnected"{
+        print $1,$2
+        for(i=3;i<=NF;i++)if($i~/^[0-9]+x[0-9]+\+[0-9]+\+[0-9]+/)print $1,$i
+        out=$1;inside=1;edid=0;next
+      }
+      inside&&/^[^[:space:]]/{inside=0;edid=0}
+      inside&&/^[[:space:]]*EDID:/{edid=1;next}
+      edid{
+        line=$0;gsub(/[[:space:]]/,"",line)
+        if(line~/^[0-9a-fA-F]{32}$/)print out,line
+        else if(line!="")edid=0
+      }
+    ' | sha256sum | awk '{print $1}'
+}
+assigned_inactive() {
+  [[ -f "$PULSAR_DATA_DIR/displays.env" ]] || return 1
+  local query key out
+  query="$(timeout 5 xrandr --query 2>/dev/null || true)"
+  while IFS='=' read -r key out; do
+    case "$key" in
+      PULSAR_SETTINGS_OUTPUT|PULSAR_ROLE_DISPLAY_OUTPUT|PULSAR_ROLE_AR1_OUTPUT|PULSAR_ROLE_AR2_OUTPUT)
+        [[ -n "$out" ]] || continue
+        awk -v out="$out" '
+          $1==out&&$2=="connected"{
+            connected=1
+            for(i=3;i<=NF;i++)if($i~/^[0-9]+x[0-9]+\+[0-9]+\+[0-9]+/)active=1
+          }
+          END{exit connected&&!active?0:1}
+        ' <<<"$query" && return 0
+      ;;
+    esac
+  done <"$PULSAR_DATA_DIR/displays.env"
+  return 1
 }
 
-apply_if_changed() {
-  local current previous=""
+last="$(signature || true)"
+candidate=""
+stable=0
+while :; do
+  sleep "$interval"
   current="$(signature || true)"
-  [[ -n "$current" ]] || return 0
-  [[ -f "$LAST_FILE" ]] && previous="$(<"$LAST_FILE")"
-  [[ "$current" != "$previous" ]] || return 0
-
-  (
-    flock -n 9 || exit 0
-    sleep "$DEBOUNCE"
-    current="$(signature || true)"
-    [[ -n "$current" ]] || exit 0
-    previous=""
-    [[ -f "$LAST_FILE" ]] && previous="$(<"$LAST_FILE")"
-    [[ "$current" != "$previous" ]] || exit 0
-
-    start_ns="$(date +%s%N)"
-    if nice -n 18 ionice -c3 \
-      "$PULSAR_ROOT/core/scripts/configure-displays.sh" \
-      >>"$PULSAR_LOG_FILE" 2>&1; then
-      printf '%s' "$current" >"$LAST_FILE"
-      end_ns="$(date +%s%N)"
-      elapsed_ms=$(((end_ns-start_ns)/1000000))
-      printf '%s\n' \
-        "Pulsar display hotplug: independent RTX topology updated in ${elapsed_ms}ms; UI state file refreshed." \
-        >>"$PULSAR_LOG_FILE"
-    else
-      printf '%s\n' \
-        "Pulsar display hotplug: topology update failed; previous scanout remains active." \
-        >>"$PULSAR_LOG_FILE"
-    fi
-  ) 9>"$LOCK_FILE"
-}
-
-# PULSAR_INITIAL_DISPLAY_REAPPLY_V1
-# Apply the display topology once after Xorg, Chrome and NVIDIA-G0 are ready.
-# Otherwise a late DP connector can become the watcher baseline without
-# receiving a CRTC, mode or position.
-if nice -n 18 ionice -c3 "$PULSAR_ROOT/core/scripts/configure-displays.sh" >>"$PULSAR_LOG_FILE" 2>&1; then
-  printf '%s\n'     "Pulsar display hotplug: initial settled topology applied."     >>"$PULSAR_LOG_FILE"
-fi
-
-# PULSAR_WATCHER_INITIAL_REAPPLY_V1
-# NVIDIA can expose DP after the first session configure pass. Reapply before
-# recording the baseline so "connected but inactive" is never accepted.
-if nice -n 18 ionice -c3 \
-  "$PULSAR_ROOT/core/scripts/configure-displays.sh" \
-  >>"$PULSAR_LOG_FILE" 2>&1; then
-  printf '%s\n' \
-    "Pulsar display hotplug: initial RTX topology reapplied before baseline." \
-    >>"$PULSAR_LOG_FILE"
-fi
-
-initial="$(signature || true)"
-[[ -n "$initial" ]] && printf '%s' "$initial" >"$LAST_FILE"
-
-fallback_loop() {
-  while true; do
-    sleep "$INTERVAL"
-    apply_if_changed || true
-  done
-}
-fallback_loop &
-fallback_pid=$!
-
-if command -v udevadm >/dev/null 2>&1; then
-  udevadm monitor --udev --subsystem-match=drm 2>/dev/null |
-    while IFS= read -r line; do
-      [[ "$line" == UDEV* ]] || continue
-      apply_if_changed || true
-    done
-else
-  wait "$fallback_pid"
-fi
+  repair=0
+  if [[ -n "$current" && "$current" != "$last" ]]; then
+    if [[ "$current" == "$candidate" ]]; then stable=$((stable+1)); else candidate="$current";stable=1; fi
+    ((stable>=debounce)) && repair=1
+  else
+    candidate="";stable=0
+  fi
+  assigned_inactive && repair=1
+  ((repair==1)) || continue
+  flock -n 9 || continue
+  if timeout 15 "$PULSAR_ROOT/core/scripts/configure-displays.sh" >>"$PULSAR_LOG_FILE" 2>&1; then
+    last="$(signature || true)";candidate="";stable=0
+    echo "Pulsar display watch: EDID roles, viewer layout and 7-inch touch refreshed." >>"$PULSAR_LOG_FILE"
+  else
+    echo "Pulsar display watch: reconfiguration failed; retrying." >>"$PULSAR_LOG_FILE"
+  fi
+  flock -u 9
+done
