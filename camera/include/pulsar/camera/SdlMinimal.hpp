@@ -43,6 +43,7 @@ int SDL_UpdateTexture(SDL_Texture* texture, const SDL_Rect* rect, const void* pi
 int SDL_RenderCopyEx(SDL_Renderer* renderer, SDL_Texture* texture, const SDL_Rect* srcrect,
                      const SDL_Rect* dstrect, double angle, const void* center, SDL_RendererFlip flip);
 void* SDL_GL_GetProcAddress(const char* proc);
+int SDL_GL_SetSwapInterval(int interval);
 int SDL_GL_BindTexture(SDL_Texture* texture, float* texw, float* texh);
 int SDL_GL_UnbindTexture(SDL_Texture* texture);
 }

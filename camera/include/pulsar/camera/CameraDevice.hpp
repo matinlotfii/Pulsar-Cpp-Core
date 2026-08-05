@@ -174,6 +174,12 @@ class CameraDevice {
   std::vector<uint8_t> resized_;
   std::vector<uint8_t> previewResized_;
 
+  // Reuse published RGB storage once no consumer references an older frame.
+  // This removes a multi-megabyte allocation from every camera frame while
+  // preserving immutable shared ownership for renderer/preview consumers.
+  std::array<std::shared_ptr<std::vector<uint8_t>>, 4> publishRgbPool_{};
+  size_t publishRgbPoolNext_ = 0;
+
   std::unique_ptr<GpuBayerPipeline> gpuPipeline_;
   bool gpuRequested_ = false;
   bool gpuDisabledAfterFailure_ = false;

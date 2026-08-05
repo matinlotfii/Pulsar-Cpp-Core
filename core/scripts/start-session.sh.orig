@@ -380,14 +380,7 @@ if [[ "${PULSAR_HIDE_CURSOR:-1}" == "1" ]] && [[ -x "$PULSAR_ROOT/core/scripts/h
   "$PULSAR_ROOT/core/scripts/hide-cursor.sh" >/dev/null 2>&1 &
   unclutter_pid=$!
 fi
-browser_nice="${PULSAR_BROWSER_NICE:-5}"
-if [[ "$browser_nice" =~ ^-?[0-9]+$ ]]; then
-  nice -n "$browser_nice" "$browser" "${browser_flags[@]}" \
-    >>"$PULSAR_DATA_DIR/browser.log" 2>&1 &
-else
-  "$browser" "${browser_flags[@]}" \
-    >>"$PULSAR_DATA_DIR/browser.log" 2>&1 &
-fi
+"$browser" "${browser_flags[@]}" >>"$PULSAR_DATA_DIR/browser.log" 2>&1 &
 browser_pid=$!
 echo "$browser_pid" >"$browser_pid_file"
 

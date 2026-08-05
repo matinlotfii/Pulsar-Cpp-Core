@@ -696,7 +696,10 @@ void CameraDevice::mockLoop() {
 
 void CameraDevice::previewLoop() {
   pthread_setname_np(pthread_self(), slot_ == 0 ? "pulsar-jpg-l" : "pulsar-jpg-r");
-  bestEffortRealtime(-4, 10);
+  // JPEG preview is best-effort UI work. It must never compete at realtime
+  // priority with camera acquisition or the SBS renderer. Quality/FPS remain
+  // unchanged; only scheduler precedence is lowered.
+  ::setpriority(PRIO_PROCESS, 0, 5);
 
   const auto interval = std::chrono::milliseconds(1000 / std::max(previewFps_, 1));
   auto next = std::chrono::steady_clock::now();
@@ -1187,7 +1190,31 @@ void CameraDevice::publish(
     resizeRgbBilinearInto(rgb, width, height, outWidth, outHeight, resized_);
     data = resized_.data();
   }
-  auto rgbCopy = std::make_shared<std::vector<uint8_t>>(data, data + static_cast<size_t>(outWidth) * outHeight * 3u);
+  const std::size_t outputBytes =
+      static_cast<std::size_t>(outWidth) * outHeight * 3u;
+  std::shared_ptr<std::vector<uint8_t>> rgbCopy;
+
+  // Use the next free frame buffer instead of allocating several megabytes
+  // for every frame. A slot is reused only when the pool is its sole owner,
+  // so published frames remain immutable for renderer/JPEG consumers.
+  for (std::size_t offset = 0; offset < publishRgbPool_.size(); ++offset) {
+    const std::size_t index =
+        (publishRgbPoolNext_ + offset) % publishRgbPool_.size();
+    auto& slot = publishRgbPool_[index];
+    if (slot && slot.use_count() != 1) continue;
+    if (!slot) slot = std::make_shared<std::vector<uint8_t>>();
+    slot->resize(outputBytes);
+    std::memcpy(slot->data(), data, outputBytes);
+    rgbCopy = slot;
+    publishRgbPoolNext_ = (index + 1) % publishRgbPool_.size();
+    break;
+  }
+
+  if (!rgbCopy) {
+    rgbCopy = std::make_shared<std::vector<uint8_t>>(outputBytes);
+    std::memcpy(rgbCopy->data(), data, outputBytes);
+  }
+
   std::shared_ptr<const std::vector<uint8_t>> currentJpeg;
   {
     std::lock_guard<std::mutex> lock(previewMutex_);

@@ -47,6 +47,7 @@ constexpr GlEnum kGlPixelUnpackBuffer = 0x88ECu;
 constexpr GlEnum kGlStreamDraw = 0x88E0u;
 constexpr GlBitfield kGlMapWriteBit = 0x0002u;
 constexpr GlBitfield kGlMapInvalidateBufferBit = 0x0008u;
+constexpr GlBitfield kGlMapUnsynchronizedBit = 0x0020u;
 constexpr GlEnum kGlTexture2d = 0x0DE1u;
 constexpr GlEnum kGlRgb = 0x1907u;
 constexpr GlEnum kGlUnsignedByte = 0x1401u;
@@ -84,7 +85,8 @@ const char* stereoPairingModeName(StereoPairingMode mode) {
 }
 
 struct GlPboSlot {
-  std::array<GlUInt, 2> buffers{};
+  std::array<GlUInt, 3> buffers{};
+  std::array<size_t, 3> capacities{};
   size_t next = 0;
 };
 
@@ -156,13 +158,27 @@ class GlPboUploader {
     }
 
     const size_t bytes = static_cast<size_t>(width) * static_cast<size_t>(height) * 3u;
-    const GlUInt buffer = slot.buffers[slot.next];
+    const size_t bufferIndex = slot.next;
+    const GlUInt buffer = slot.buffers[bufferIndex];
     glBindBuffer_(kGlPixelUnpackBuffer, buffer);
-    glBufferData_(kGlPixelUnpackBuffer, static_cast<GlSize>(bytes), nullptr, kGlStreamDraw);
+
+    // Allocate each PBO only when the frame size grows. The previous code
+    // orphaned and reallocated a multi-megabyte buffer for every camera frame,
+    // which dominated upload time on X11/PRIME. Three rotating PBOs give the
+    // GPU more than two camera periods before the same storage is reused.
+    if (slot.capacities[bufferIndex] < bytes) {
+      glBufferData_(
+          kGlPixelUnpackBuffer,
+          static_cast<GlSize>(bytes),
+          nullptr,
+          kGlStreamDraw);
+      slot.capacities[bufferIndex] = bytes;
+    }
 
     void* mapped = glMapBufferRange_(
         kGlPixelUnpackBuffer, 0, static_cast<GlSize>(bytes),
-        kGlMapWriteBit | kGlMapInvalidateBufferBit);
+        kGlMapWriteBit | kGlMapInvalidateBufferBit |
+            kGlMapUnsynchronizedBit);
     if (mapped == nullptr) {
       glBindBuffer_(kGlPixelUnpackBuffer, 0u);
       SDL_GL_UnbindTexture(texture);
@@ -577,30 +593,43 @@ void composeLineInterleaved(TextureSlot& leftSlot, TextureSlot& rightSlot,
   }
 }
 
-void renderFrame(SDL_Renderer* renderer, GlPboUploader* uploader, TextureSlot& slot,
-                 const CameraStatus& camera, const core::CameraControls& controls,
-                 const SDL_Rect& destination,
-                 bool mirror, uint8_t offlinePhase, double alignXRatio = 0.0, double alignYRatio = 0.0) {
+void prepareFrameTexture(
+    SDL_Renderer* renderer,
+    GlPboUploader* uploader,
+    TextureSlot& slot,
+    const CameraStatus& camera,
+    const core::CameraControls& controls,
+    uint8_t offlinePhase) {
   std::shared_ptr<const Frame> selected = camera.frame;
-  if (controls.frozen && slot.heldFrame) selected = slot.heldFrame;
-  else if (selected) slot.heldFrame = selected;
+  if (controls.frozen && slot.heldFrame) {
+    selected = slot.heldFrame;
+  } else if (selected) {
+    slot.heldFrame = selected;
+  }
 
   if (selected && selected->rgb && !selected->rgb->empty()) {
-    if (slot.texture == nullptr || slot.width != selected->width || slot.height != selected->height) {
+    if (slot.texture == nullptr || slot.width != selected->width ||
+        slot.height != selected->height) {
       if (slot.texture) SDL_DestroyTexture(slot.texture);
       slot.texture = makeTexture(renderer, selected->width, selected->height);
       slot.width = selected->width;
       slot.height = selected->height;
       slot.frameId = 0;
     }
+
     if (slot.texture && slot.frameId != selected->id) {
       const auto uploadStart = std::chrono::steady_clock::now();
       const int updateStatus = uploadTexturePixels(
-          renderer, uploader, slot, selected->rgb->data(),
-          selected->width, selected->height);
+          renderer,
+          uploader,
+          slot,
+          selected->rgb->data(),
+          selected->width,
+          selected->height);
       const auto uploadEnd = std::chrono::steady_clock::now();
       slot.lastUploadMs = milliseconds(uploadEnd - uploadStart);
       slot.uploadedThisLoop = true;
+
       if (updateStatus == 0) {
         slot.frameId = selected->id;
       } else {
@@ -614,16 +643,59 @@ void renderFrame(SDL_Renderer* renderer, GlPboUploader* uploader, TextureSlot& s
     slot.texture = makeTexture(renderer, width, height);
     slot.width = width;
     slot.height = height;
+
     if (slot.texture) {
-      uploadTexturePixels(renderer, uploader, slot, offline.data(), width, height);
+      uploadTexturePixels(
+          renderer,
+          uploader,
+          slot,
+          offline.data(),
+          width,
+          height);
     }
   }
+}
+
+void renderFrame(
+    SDL_Renderer* renderer,
+    GlPboUploader* uploader,
+    TextureSlot& slot,
+    const CameraStatus& camera,
+    const core::CameraControls& controls,
+    const SDL_Rect& destination,
+    bool mirror,
+    uint8_t offlinePhase,
+    double alignXRatio = 0.0,
+    double alignYRatio = 0.0) {
+  // Normally this is already prepared once before any panel is drawn. Keep
+  // the guarded call here for frozen/offline transitions and future callers.
+  prepareFrameTexture(
+      renderer,
+      uploader,
+      slot,
+      camera,
+      controls,
+      offlinePhase);
 
   if (!slot.texture) return;
-  SDL_Rect source = cropForZoomAndAlign(slot.width, slot.height, controls.zoom, alignXRatio, alignYRatio);
-  const SDL_RendererFlip flip = mirror ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE;
-  SDL_RenderCopyEx(renderer, slot.texture, &source, &destination,
-                   static_cast<double>(controls.rotation), nullptr, flip);
+
+  SDL_Rect source = cropForZoomAndAlign(
+      slot.width,
+      slot.height,
+      controls.zoom,
+      alignXRatio,
+      alignYRatio);
+  const SDL_RendererFlip flip = mirror
+      ? SDL_FLIP_HORIZONTAL
+      : SDL_FLIP_NONE;
+  SDL_RenderCopyEx(
+      renderer,
+      slot.texture,
+      &source,
+      &destination,
+      static_cast<double>(controls.rotation),
+      nullptr,
+      flip);
 }
 
 void renderTexture(SDL_Renderer* renderer, GlPboUploader* uploader, TextureSlot& slot,
@@ -678,6 +750,9 @@ void SbsRenderer::loop() {
   std::cerr << "SBS Renderer: stereo-pairing-mode="
             << stereoPairingModeName(pairingMode) << '\n';
   SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
+  SDL_SetHint("SDL_RENDER_VSYNC", "0");
+  SDL_SetHint("SDL_RENDER_BATCHING", "1");
+  SDL_SetHint("SDL_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR", "1");
   if (pboRequested) SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
   if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) {
     std::cerr << "SDL video init failed: " << SDL_GetError() << '\n';
@@ -733,6 +808,14 @@ void SbsRenderer::loop() {
               << " flags=" << rendererInfo.flags << '\n';
   }
 
+  const int swapIntervalStatus = SDL_GL_SetSwapInterval(0);
+  std::cerr << "SBS Renderer: explicit-swap-interval=0 status="
+            << swapIntervalStatus;
+  if (swapIntervalStatus != 0) {
+    std::cerr << " error=" << SDL_GetError();
+  }
+  std::cerr << '\n';
+
   GlPboUploader pboUploader;
   if (pboRequested) {
     std::string pboError;
@@ -780,8 +863,13 @@ void SbsRenderer::loop() {
   } catch (...) {
   }
 
+  const bool eventDriven = envEnabled("PULSAR_RENDER_EVENT_DRIVEN", true);
+  std::array<uint64_t, 2> lastRenderedFrameIds{{0, 0}};
+  auto nextIdleRedraw = reportStart;
+
   while (running_) {
     const auto loopNow = std::chrono::steady_clock::now();
+    bool layoutChanged = false;
     if (loopNow >= nextLayoutCheck) {
       nextLayoutCheck = loopNow + std::chrono::milliseconds(200);
       bool changed = false;
@@ -802,6 +890,7 @@ void SbsRenderer::loop() {
           panels = viewerLayout.panels;
           SDL_SetWindowPosition(window, bounds.x, bounds.y);
           SDL_SetWindowSize(window, bounds.w, bounds.h);
+          layoutChanged = true;
           std::cerr << "SBS Renderer: live-layout-update=1 canvas="
                     << bounds.w << "x" << bounds.h << "+" << bounds.x << "+" << bounds.y
                     << " panels=" << panels.size() << '\n';
@@ -837,12 +926,58 @@ void SbsRenderer::loop() {
       renderControls[1] = renderControls[0];
     }
 
+    const uint64_t leftFrameId = renderPair[0].frame
+        ? renderPair[0].frame->id
+        : 0ULL;
+    const uint64_t rightFrameId = renderPair[1].frame
+        ? renderPair[1].frame->id
+        : 0ULL;
+    const bool frameChanged =
+        leftFrameId != lastRenderedFrameIds[0] ||
+        rightFrameId != lastRenderedFrameIds[1];
+    const bool idleRedrawDue = loopNow >= nextIdleRedraw;
+
+    if (eventDriven && !frameChanged && !layoutChanged && !idleRedrawDue) {
+      CameraStatus waited{};
+      bool ready = false;
+
+      if (latest[0].frame) {
+        ready = cameras_.waitForFrame(
+            0,
+            latest[0].frame->id,
+            waited,
+            1);
+      }
+
+      if (!ready && latest[1].frame) {
+        ready = cameras_.waitForFrame(
+            1,
+            latest[1].frame->id,
+            waited,
+            1);
+      }
+
+      if (!ready && !latest[0].frame && !latest[1].frame) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+
+      continue;
+    }
+
+    nextIdleRedraw = loopNow + std::chrono::milliseconds(50);
+
+    // Upload each camera texture once before drawing any monitor/glass panel.
+    // The same GPU textures are then reused for all active outputs.
+    prepareFrameTexture(
+        renderer, uploader, textures[0], renderPair[0], renderControls[0], 0u);
+    prepareFrameTexture(
+        renderer, uploader, textures[1], renderPair[1], renderControls[1], 23u);
+
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
 
-    const uint64_t leftFrameId = renderPair[0].frame ? renderPair[0].frame->id : 0ULL;
-    const uint64_t rightFrameId = renderPair[1].frame ? renderPair[1].frame->id : 0ULL;
-    const uint64_t compositeKey = (leftFrameId * 0x9E3779B185EBCA87ULL) ^ rightFrameId;
+    const uint64_t compositeKey =
+        (leftFrameId * 0x9E3779B185EBCA87ULL) ^ rightFrameId;
 
     for (const auto& viewerPanel : panels) {
       const size_t profileIndex = viewerPanel.profileIndex;
@@ -952,6 +1087,7 @@ void SbsRenderer::loop() {
     const double presentMs = milliseconds(presentEnd - presentStart);
     presentMsSum += presentMs;
     presentMsMax = std::max(presentMsMax, presentMs);
+    lastRenderedFrameIds = {{leftFrameId, rightFrameId}};
     ++reportLoops;
 
     const std::chrono::duration<double> reportElapsed = presentEnd - reportStart;
