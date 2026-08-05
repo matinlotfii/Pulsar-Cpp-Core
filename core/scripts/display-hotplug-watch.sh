@@ -4,156 +4,140 @@ set -Eeuo pipefail
 source "$(dirname "$0")/common.sh"
 load_config
 
+export DISPLAY="${DISPLAY:-:0}"
 lock_file="$PULSAR_DATA_DIR/display-hotplug.lock"
 pid_file="$PULSAR_DATA_DIR/display-hotplug.pid"
-interval="${PULSAR_DISPLAY_HOTPLUG_INTERVAL:-1}"
+interval="${PULSAR_DISPLAY_HOTPLUG_INTERVAL:-0.5}"
 debounce_samples="${PULSAR_DISPLAY_HOTPLUG_DEBOUNCE_SAMPLES:-2}"
+refresh_helper="$PULSAR_ROOT/core/scripts/refresh-nvidia-outputs.sh"
 
 mkdir -p "$PULSAR_DATA_DIR"
 printf '%s\n' "$$" >"$pid_file"
-
 exec 9>"$lock_file"
 
 cleanup() {
   rm -f "$pid_file"
+  [[ -n "${udev_pid:-}" ]] && kill "$udev_pid" 2>/dev/null || true
 }
-
 trap cleanup EXIT INT TERM
 
+safe_usb_id() {
+  local device="$1" vendor product
+  [[ -r "$device/idVendor" && -r "$device/idProduct" ]] || return 1
+  vendor="$(cat "$device/idVendor" 2>/dev/null || true)"
+  product="$(cat "$device/idProduct" 2>/dev/null || true)"
+  [[ -n "$vendor" && -n "$product" ]] || return 1
+  printf '%s:%s\n' "${vendor,,}" "${product,,}"
+}
+
 topology_signature() {
-  timeout 5 xrandr --prop 2>/dev/null |
-    awk '
-      $2 == "connected" || $2 == "disconnected" {
-        print "OUTPUT", $1, $2
-
-        if ($2 == "connected") {
-          for (i = 3; i <= NF; i++) {
-            if ($i ~ /^[0-9]+x[0-9]+\+[0-9]+\+[0-9]+/) {
-              print "GEOMETRY", $1, $i
-            }
-          }
+  {
+    timeout 4 xrandr --prop 2>/dev/null |
+      awk '
+        $2=="connected" || $2=="disconnected" {
+          print "OUTPUT", $1, $2, $0
+          output=$1
+          inside=1
+          edid=0
+          next
         }
-
-        output = $1
-        inside = 1
-        edid = 0
-        next
-      }
-
-      inside && /^[^[:space:]]/ {
-        inside = 0
-        edid = 0
-      }
-
-      inside && /^[[:space:]]*EDID:/ {
-        edid = 1
-        next
-      }
-
-      edid {
-        line = $0
-        gsub(/[[:space:]]/, "", line)
-
-        if (line ~ /^[0-9a-fA-F]{32}$/) {
-          print "EDID", output, line
-        } else if (line != "") {
-          edid = 0
+        inside && /^[^[:space:]]/ {inside=0; edid=0}
+        inside && /^[[:space:]]*EDID:/ {edid=1; next}
+        edid {
+          line=$0
+          gsub(/[[:space:]]/, "", line)
+          if (line ~ /^[0-9a-fA-F]{32}$/) print "EDID", output, line
+          else if (line!="") edid=0
         }
-      }
-    ' |
-    cksum |
-    awk '{print $1 ":" $2}'
+      '
+
+    for status in /sys/class/drm/card*-*/status; do
+      [[ -r "$status" ]] || continue
+      printf 'DRM %s %s\n' "$(basename "$(dirname "$status")")" "$(cat "$status" 2>/dev/null || true)"
+    done
+
+    for device in /sys/bus/usb/devices/*; do
+      id="$(safe_usb_id "$device" || true)"
+      case "$id" in
+        3318:0432|3318:0424|3318:0425)
+          printf 'XREAL-USB %s %s\n' "$(basename "$device")" "$id"
+          ;;
+      esac
+    done
+  } | cksum | awk '{print $1 ":" $2}'
 }
 
-assigned_output_inactive() {
-  local query key output
+reconfigure() {
+  flock -n 9 || return 0
 
-  [[ -f "$PULSAR_DATA_DIR/displays.env" ]] || return 1
+  start_ns="$(date +%s%N)"
+  [[ -x "$refresh_helper" ]] && "$refresh_helper" || true
 
-  query="$(timeout 5 xrandr --query 2>/dev/null || true)"
-
-  while IFS='=' read -r key output; do
-    case "$key" in
-      PULSAR_SETTINGS_OUTPUT|\
-      PULSAR_ROLE_DISPLAY_OUTPUT|\
-      PULSAR_ROLE_AR1_OUTPUT|\
-      PULSAR_ROLE_AR2_OUTPUT)
-        [[ -n "$output" ]] || continue
-
-        awk -v target="$output" '
-          $1 == target && $2 == "connected" {
-            connected = 1
-
-            for (i = 3; i <= NF; i++) {
-              if ($i ~ /^[0-9]+x[0-9]+\+[0-9]+\+[0-9]+/) {
-                active = 1
-              }
-            }
-          }
-
-          END {
-            exit connected && !active ? 0 : 1
-          }
-        ' <<<"$query" &&
-          return 0
-        ;;
-    esac
-  done <"$PULSAR_DATA_DIR/displays.env"
-
-  return 1
-}
-
-last_signature="$(topology_signature || true)"
-candidate_signature=""
-stable_count=0
-
-while :; do
-  sleep "$interval"
-
-  current_signature="$(topology_signature || true)"
-  repair=0
-
-  if [[ -n "$current_signature" &&
-        "$current_signature" != "$last_signature" ]]; then
-
-    if [[ "$current_signature" == "$candidate_signature" ]]; then
-      stable_count=$((stable_count + 1))
-    else
-      candidate_signature="$current_signature"
-      stable_count=1
-    fi
-
-    if ((stable_count >= debounce_samples)); then
-      repair=1
-    fi
-  else
-    candidate_signature=""
-    stable_count=0
-  fi
-
-  assigned_output_inactive &&
-    repair=1
-
-  ((repair == 1)) || continue
-
-  flock -n 9 || continue
-
-  if timeout 20 \
+  # Retry while the RTX performs DP link training. The configure script itself
+  # also waits for stable EDID, so this remains bounded and non-blocking.
+  if timeout 20 nice -n 10 ionice -c3 \
       "$PULSAR_ROOT/core/scripts/configure-displays.sh" \
       >>"$PULSAR_LOG_FILE" 2>&1; then
-
-    last_signature="$(topology_signature || true)"
-    candidate_signature=""
-    stable_count=0
-
+    end_ns="$(date +%s%N)"
     printf '%s\n' \
-      "Pulsar display watch: monitor and up to two XREAL glasses refreshed without restarting the camera service." \
+      "Pulsar display hotplug: monitor/two-glass layout applied live in $(((end_ns-start_ns)/1000000))ms." \
       >>"$PULSAR_LOG_FILE"
   else
     printf '%s\n' \
-      "Pulsar display watch: topology refresh failed; retrying without blocking video." \
+      "Pulsar display hotplug: RTX refresh did not settle; retrying on the next event/poll." \
       >>"$PULSAR_LOG_FILE"
   fi
 
   flock -u 9
+}
+
+# Configure once on watcher start, including a glass that was connected after
+# the service launched but before this process began.
+reconfigure || true
+baseline="$(topology_signature || true)"
+candidate="$baseline"
+stable=0
+
+# A DRM event shortens response time. The polling loop remains authoritative
+# because NVIDIA reverse PRIME does not emit every connector event to udev.
+if command -v udevadm >/dev/null 2>&1; then
+  (
+    udevadm monitor --udev --subsystem-match=drm 2>/dev/null |
+      while IFS= read -r line; do
+        [[ "$line" == UDEV* ]] || continue
+        printf '%s\n' event >"$PULSAR_DATA_DIR/display-hotplug.event"
+      done
+  ) &
+  udev_pid=$!
+fi
+
+while :; do
+  sleep "$interval"
+
+  current="$(topology_signature || true)"
+  event_requested=0
+  if [[ -f "$PULSAR_DATA_DIR/display-hotplug.event" ]]; then
+    rm -f "$PULSAR_DATA_DIR/display-hotplug.event"
+    event_requested=1
+  fi
+
+  if [[ "$current" == "$baseline" && "$event_requested" == "0" ]]; then
+    candidate="$baseline"
+    stable=0
+    continue
+  fi
+
+  if [[ "$current" == "$candidate" ]]; then
+    stable=$((stable+1))
+  else
+    candidate="$current"
+    stable=1
+  fi
+
+  if ((event_requested==1 || stable>=debounce_samples)); then
+    reconfigure || true
+    baseline="$(topology_signature || true)"
+    candidate="$baseline"
+    stable=0
+  fi
 done

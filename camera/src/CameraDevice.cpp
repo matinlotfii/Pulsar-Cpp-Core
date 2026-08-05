@@ -988,7 +988,8 @@ bool CameraDevice::configure() {
     streamBufferMode = "OldestFirstOverwrite";
   }
 
-  constexpr uint64_t kAcquisitionBufferCount = 4;
+  const uint64_t kAcquisitionBufferCount = static_cast<uint64_t>(
+      envInt("PULSAR_ACQUISITION_BUFFER_COUNT", 2, 2, 8));
 
   if (GXSetAcqusitionBufferNumber(device_, kAcquisitionBufferCount) !=
       GX_STATUS_SUCCESS) {
