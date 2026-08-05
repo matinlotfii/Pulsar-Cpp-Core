@@ -10,7 +10,7 @@ DeviceLinkSelector	0
 DeviceLinkThroughputLimitMode	On
 DeviceLinkSelector	0
 DeviceLinkSelector	0
-DeviceLinkThroughputLimit	350000000
+DeviceLinkThroughputLimit	395000000
 DeviceLinkSelector	0
 PixelFormat	BayerRG8
 RegionSendMode	SingleROISendMode
