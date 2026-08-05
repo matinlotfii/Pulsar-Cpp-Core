@@ -130,16 +130,6 @@ class CameraDevice {
       bool online,
       FrameTiming timing = {});
 
-  std::shared_ptr<std::vector<uint8_t>> acquirePublishBuffer(
-      std::size_t requiredBytes);
-
-  void publishOwned(
-      uint32_t width,
-      uint32_t height,
-      std::shared_ptr<std::vector<uint8_t>> rgb,
-      bool online,
-      FrameTiming timing = {});
-
   void fail(const std::string& message);
 
   uint32_t slot_;
@@ -183,12 +173,6 @@ class CameraDevice {
   std::vector<uint8_t> gpuRgb_;
   std::vector<uint8_t> resized_;
   std::vector<uint8_t> previewResized_;
-
-  // Reuse published RGB storage once no consumer references an older frame.
-  // This removes a multi-megabyte allocation from every camera frame while
-  // preserving immutable shared ownership for renderer/preview consumers.
-  std::array<std::shared_ptr<std::vector<uint8_t>>, 4> publishRgbPool_{};
-  size_t publishRgbPoolNext_ = 0;
 
   std::unique_ptr<GpuBayerPipeline> gpuPipeline_;
   bool gpuRequested_ = false;

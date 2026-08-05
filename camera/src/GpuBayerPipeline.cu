@@ -9,9 +9,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <vector>
-#include <utility>
-#include <unistd.h>
 #include <sstream>
 #include <string>
 
@@ -75,7 +72,6 @@ struct GpuBayerPipeline::Impl {
   size_t hostInputCapacity = 0;
   size_t stagedInputBytes = 0;
   size_t hostOutputCapacity = 0;
-  bool deviceInputStaged = false;
 
   cudaEvent_t totalStart = nullptr;
   cudaEvent_t h2dDone = nullptr;
@@ -153,15 +149,6 @@ struct GpuBayerPipeline::Impl {
     }
 
     hostInputCapacity = required;
-    return true;
-  }
-
-  // PULSAR_DIRECT_SDK_TO_CUDA_V1
-  bool ensureRegisteredHostRange(void* pointer, size_t bytes, std::string& error) {
-    if (pointer == nullptr || bytes == 0) {
-      error = "invalid host output range";
-      return false;
-    }
     return true;
   }
 
@@ -282,62 +269,6 @@ bool GpuBayerPipeline::stageInput(
 
   std::memcpy(impl_->hostInput, bayer, bytes);
   impl_->stagedInputBytes = bytes;
-  impl_->deviceInputStaged = false;
-  return true;
-}
-
-bool GpuBayerPipeline::stageInputDirectToDevice(
-    const uint8_t* bayer,
-    std::size_t bytes,
-    std::string& error) {
-  error.clear();
-
-  if (!impl_->initialized && !initialize(error)) return false;
-  if (bayer == nullptr || bytes == 0) {
-    error = "invalid direct Bayer input";
-    return false;
-  }
-  if (!impl_->ensureDeviceBuffer(
-          impl_->deviceBayer,
-          impl_->deviceBayerCapacity,
-          bytes,
-          "cudaMalloc(Bayer)",
-          error)) {
-    return false;
-  }
-
-  cudaError_t status = cudaEventRecord(impl_->totalStart, impl_->stream);
-  if (status != cudaSuccess) {
-    error = cudaErrorText("cudaEventRecord(totalStart)", status);
-    return false;
-  }
-
-  // The SDK owns this pointer only until GXQAllBufs. Synchronize only the H2D
-  // transfer, then immediately return the acquisition buffers. Debayer/resize
-  // continue from device memory after the SDK buffer has been released.
-  status = cudaMemcpyAsync(
-      impl_->deviceBayer,
-      bayer,
-      bytes,
-      cudaMemcpyHostToDevice,
-      impl_->stream);
-  if (status != cudaSuccess) {
-    error = cudaErrorText("cudaMemcpyAsync(direct SDK H2D)", status);
-    return false;
-  }
-  status = cudaEventRecord(impl_->h2dDone, impl_->stream);
-  if (status != cudaSuccess) {
-    error = cudaErrorText("cudaEventRecord(h2dDone)", status);
-    return false;
-  }
-  status = cudaEventSynchronize(impl_->h2dDone);
-  if (status != cudaSuccess) {
-    error = cudaErrorText("cudaEventSynchronize(direct H2D)", status);
-    return false;
-  }
-
-  impl_->stagedInputBytes = bytes;
-  impl_->deviceInputStaged = true;
   return true;
 }
 
@@ -351,53 +282,19 @@ bool GpuBayerPipeline::processStaged(
     std::size_t& outputByteCount,
     GpuBayerTimings& timings,
     std::string& error) {
-  const size_t outputBytes =
-      static_cast<size_t>(outputWidth) * static_cast<size_t>(outputHeight) * 3u;
-  if (!impl_->ensureHostOutput(outputBytes, error)) return false;
-
-  std::size_t written = 0;
-  if (!processStagedInto(
-          sourceWidth,
-          sourceHeight,
-          pattern,
-          outputWidth,
-          outputHeight,
-          impl_->hostOutput,
-          impl_->hostOutputCapacity,
-          written,
-          timings,
-          error)) {
-    outputRgb = nullptr;
-    outputByteCount = 0;
-    return false;
-  }
-
-  outputRgb = impl_->hostOutput;
-  outputByteCount = written;
-  return true;
-}
-
-bool GpuBayerPipeline::processStagedInto(
-    uint32_t sourceWidth,
-    uint32_t sourceHeight,
-    BayerPattern pattern,
-    uint32_t outputWidth,
-    uint32_t outputHeight,
-    uint8_t* outputRgb,
-    std::size_t outputCapacity,
-    std::size_t& outputByteCount,
-    GpuBayerTimings& timings,
-    std::string& error) {
   timings = {};
   error.clear();
+  outputRgb = nullptr;
   outputByteCount = 0;
 
   if (!impl_->initialized && !initialize(error)) return false;
+
   if (sourceWidth == 0 || sourceHeight == 0 ||
       outputWidth == 0 || outputHeight == 0) {
     error = "invalid GPU Bayer pipeline dimensions";
     return false;
   }
+
   if ((sourceWidth & 1u) != 0u || (sourceHeight & 1u) != 0u) {
     error = "NPP CFA debayer requires even source width and height";
     return false;
@@ -409,13 +306,8 @@ bool GpuBayerPipeline::processStagedInto(
   const size_t outputBytes =
       static_cast<size_t>(outputWidth) * static_cast<size_t>(outputHeight) * 3u;
 
-  if (outputRgb == nullptr || outputCapacity < outputBytes) {
-    error = "GPU output buffer is too small";
-    return false;
-  }
-  if (!impl_->deviceInputStaged &&
-      (impl_->hostInput == nullptr || impl_->stagedInputBytes < bayerBytes)) {
-    error = "no complete Bayer frame has been staged";
+  if (impl_->hostInput == nullptr || impl_->stagedInputBytes < bayerBytes) {
+    error = "no complete page-locked Bayer frame has been staged";
     return false;
   }
 
@@ -437,39 +329,42 @@ bool GpuBayerPipeline::processStagedInto(
           outputBytes,
           "cudaMalloc(resized RGB)",
           error) ||
-      !impl_->ensureRegisteredHostRange(outputRgb, outputBytes, error)) {
+      !impl_->ensureHostOutput(outputBytes, error)) {
     return false;
   }
 
-  cudaError_t cudaStatus = cudaSuccess;
-  if (!impl_->deviceInputStaged) {
-    cudaStatus = cudaEventRecord(impl_->totalStart, impl_->stream);
-    if (cudaStatus != cudaSuccess) {
-      error = cudaErrorText("cudaEventRecord(totalStart)", cudaStatus);
-      return false;
-    }
-    cudaStatus = cudaMemcpyAsync(
-        impl_->deviceBayer,
-        impl_->hostInput,
-        bayerBytes,
-        cudaMemcpyHostToDevice,
-        impl_->stream);
-    if (cudaStatus != cudaSuccess) {
-      error = cudaErrorText("cudaMemcpyAsync(H2D Bayer)", cudaStatus);
-      return false;
-    }
-    cudaStatus = cudaEventRecord(impl_->h2dDone, impl_->stream);
-    if (cudaStatus != cudaSuccess) {
-      error = cudaErrorText("cudaEventRecord(h2dDone)", cudaStatus);
-      return false;
-    }
+  cudaError_t cudaStatus = cudaEventRecord(impl_->totalStart, impl_->stream);
+  if (cudaStatus != cudaSuccess) {
+    error = cudaErrorText("cudaEventRecord(totalStart)", cudaStatus);
+    return false;
+  }
+
+  cudaStatus = cudaMemcpyAsync(
+      impl_->deviceBayer,
+      impl_->hostInput,
+      bayerBytes,
+      cudaMemcpyHostToDevice,
+      impl_->stream);
+  if (cudaStatus != cudaSuccess) {
+    error = cudaErrorText("cudaMemcpyAsync(H2D Bayer)", cudaStatus);
+    return false;
+  }
+
+  cudaStatus = cudaEventRecord(impl_->h2dDone, impl_->stream);
+  if (cudaStatus != cudaSuccess) {
+    error = cudaErrorText("cudaEventRecord(h2dDone)", cudaStatus);
+    return false;
   }
 
   const NppiSize sourceSize{
       static_cast<int>(sourceWidth),
       static_cast<int>(sourceHeight)};
   const NppiRect sourceRoi{
-      0, 0, static_cast<int>(sourceWidth), static_cast<int>(sourceHeight)};
+      0,
+      0,
+      static_cast<int>(sourceWidth),
+      static_cast<int>(sourceHeight)};
+
   const NppStatus debayerStatus = nppiCFAToRGB_8u_C1C3R_Ctx(
       impl_->deviceBayer,
       static_cast<int>(sourceWidth),
@@ -482,14 +377,12 @@ bool GpuBayerPipeline::processStagedInto(
       impl_->nppContext);
   if (debayerStatus != NPP_SUCCESS) {
     error = nppErrorText("nppiCFAToRGB_8u_C1C3R_Ctx", debayerStatus);
-    impl_->deviceInputStaged = false;
     return false;
   }
 
   cudaStatus = cudaEventRecord(impl_->debayerDone, impl_->stream);
   if (cudaStatus != cudaSuccess) {
     error = cudaErrorText("cudaEventRecord(debayerDone)", cudaStatus);
-    impl_->deviceInputStaged = false;
     return false;
   }
 
@@ -502,7 +395,6 @@ bool GpuBayerPipeline::processStagedInto(
         impl_->stream);
     if (cudaStatus != cudaSuccess) {
       error = cudaErrorText("cudaMemcpyAsync(D2D RGB)", cudaStatus);
-      impl_->deviceInputStaged = false;
       return false;
     }
   } else {
@@ -510,7 +402,11 @@ bool GpuBayerPipeline::processStagedInto(
         static_cast<int>(outputWidth),
         static_cast<int>(outputHeight)};
     const NppiRect outputRoi{
-        0, 0, static_cast<int>(outputWidth), static_cast<int>(outputHeight)};
+        0,
+        0,
+        static_cast<int>(outputWidth),
+        static_cast<int>(outputHeight)};
+
     const NppStatus resizeStatus = nppiResize_8u_C3R_Ctx(
         impl_->deviceRgb,
         static_cast<int>(sourceWidth * 3u),
@@ -524,7 +420,6 @@ bool GpuBayerPipeline::processStagedInto(
         impl_->nppContext);
     if (resizeStatus != NPP_SUCCESS) {
       error = nppErrorText("nppiResize_8u_C3R_Ctx", resizeStatus);
-      impl_->deviceInputStaged = false;
       return false;
     }
   }
@@ -532,31 +427,29 @@ bool GpuBayerPipeline::processStagedInto(
   cudaStatus = cudaEventRecord(impl_->resizeDone, impl_->stream);
   if (cudaStatus != cudaSuccess) {
     error = cudaErrorText("cudaEventRecord(resizeDone)", cudaStatus);
-    impl_->deviceInputStaged = false;
     return false;
   }
 
   cudaStatus = cudaMemcpyAsync(
-      outputRgb,
+      impl_->hostOutput,
       impl_->deviceResized,
       outputBytes,
       cudaMemcpyDeviceToHost,
       impl_->stream);
   if (cudaStatus != cudaSuccess) {
-    error = cudaErrorText("cudaMemcpyAsync(D2H published RGB)", cudaStatus);
-    impl_->deviceInputStaged = false;
+    error = cudaErrorText("cudaMemcpyAsync(D2H RGB)", cudaStatus);
     return false;
   }
+
   cudaStatus = cudaEventRecord(impl_->d2hDone, impl_->stream);
   if (cudaStatus != cudaSuccess) {
     error = cudaErrorText("cudaEventRecord(d2hDone)", cudaStatus);
-    impl_->deviceInputStaged = false;
     return false;
   }
+
   cudaStatus = cudaEventSynchronize(impl_->d2hDone);
   if (cudaStatus != cudaSuccess) {
     error = cudaErrorText("cudaEventSynchronize", cudaStatus);
-    impl_->deviceInputStaged = false;
     return false;
   }
 
@@ -565,11 +458,10 @@ bool GpuBayerPipeline::processStagedInto(
       !elapsedMs(impl_->debayerDone, impl_->resizeDone, timings.resizeMs, error) ||
       !elapsedMs(impl_->resizeDone, impl_->d2hDone, timings.deviceToHostMs, error) ||
       !elapsedMs(impl_->totalStart, impl_->d2hDone, timings.totalMs, error)) {
-    impl_->deviceInputStaged = false;
     return false;
   }
 
-  impl_->deviceInputStaged = false;
+  outputRgb = impl_->hostOutput;
   outputByteCount = outputBytes;
   return true;
 }

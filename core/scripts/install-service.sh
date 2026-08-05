@@ -26,10 +26,6 @@ WorkingDirectory=$PULSAR_ROOT
 ExecStart=/usr/bin/xinit $PULSAR_ROOT/core/scripts/xsession.sh -- :0 vt1 -keeptty -nolisten tcp
 Restart=on-failure
 RestartSec=2
-# Allow camera and renderer threads to use their existing bounded realtime
-# priorities while leaving browser/JPEG preview work best-effort.
-LimitRTPRIO=32
-LimitNICE=10
 StandardInput=tty
 StandardOutput=journal
 StandardError=journal
