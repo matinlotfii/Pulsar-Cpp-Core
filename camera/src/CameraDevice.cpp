@@ -457,10 +457,26 @@ void CameraDevice::loop() {
           gpuRequested_ && !gpuDisabledAfterFailure_ &&
           gpuPipeline_ != nullptr && bayer8(newest->nPixelFormat);
 
-      if (canStageGpu && gpuPipeline_->stageInput(
-                             static_cast<const uint8_t*>(newest->pImgBuf),
-                             static_cast<std::size_t>(newest->nImgSize),
-                             gpuStageError)) {
+      bool staged = false;
+      if (canStageGpu) {
+        const auto* sdkPixels =
+            static_cast<const uint8_t*>(newest->pImgBuf);
+        const auto sdkBytes =
+            static_cast<std::size_t>(newest->nImgSize);
+
+        if (envEnabled("PULSAR_GPU_DIRECT_SDK_H2D", true)) {
+          staged = gpuPipeline_->stageInputDirectToDevice(
+              sdkPixels, sdkBytes, gpuStageError);
+        }
+        if (!staged) {
+          // Safe runtime fallback: retain the original pinned-host staging path
+          // when direct H2D is disabled or unsupported by the CUDA driver.
+          staged = gpuPipeline_->stageInput(
+              sdkPixels, sdkBytes, gpuStageError);
+        }
+      }
+
+      if (staged) {
         copiedFrame.pImgBuf = nullptr;
         gpuInputStaged = true;
         havePrivateFrame = true;
@@ -468,7 +484,7 @@ void CameraDevice::loop() {
         if (canStageGpu) {
           gpuDisabledAfterFailure_ = true;
           std::cerr << label_
-                    << ": GPU pinned-input staging failed; CPU fallback active: "
+                    << ": GPU input staging failed; CPU fallback active: "
                     << gpuStageError << '\n';
         }
 

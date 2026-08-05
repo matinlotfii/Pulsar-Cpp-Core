@@ -42,6 +42,14 @@ class GpuBayerPipeline {
       std::size_t bytes,
       std::string& error);
 
+  // Copy the newest Galaxy SDK buffer directly to device memory. The call
+  // completes the H2D transfer before returning, so the SDK buffer can then
+  // be safely requeued without an intermediate 12 MP host memcpy.
+  bool stageInputDirectToDevice(
+      const uint8_t* bayer,
+      std::size_t bytes,
+      std::string& error);
+
   // Process the most recently staged frame. The returned pointer is valid
   // until this pipeline processes another frame or is destroyed.
   bool processStaged(
