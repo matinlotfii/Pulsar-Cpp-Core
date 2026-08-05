@@ -70,7 +70,7 @@ matrix_for_output() {
 signature() {
   { xrandr --query 2>/dev/null | awk '/^Screen 0:/{print}$2=="connected"{print}'
     xinput --list --short 2>/dev/null | grep -Ei 'touch|USB2IIC|wch\.cn' || true
-  } | sha256sum | awk '{print $1}'
+  } | cksum | awk '{print $1 ":" $2}'
 }
 run_once() {
   local sig target matrix name id

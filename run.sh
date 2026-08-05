@@ -382,17 +382,15 @@ create_local_backups() {
   local reason="$5"
 
   require_command tar
-  require_command sha256sum
 
   mkdir -p "$RUN_GIT_BACKUP_DIR"
 
-  local safe_branch backup_base bundle archive metadata checksums
+  local safe_branch backup_base bundle archive metadata
   safe_branch="${branch//\//-}"
   backup_base="$RUN_GIT_BACKUP_DIR/Pulsar-${safe_branch}-${timestamp_compact}-${commit_hash:0:12}"
   bundle="${backup_base}.bundle"
   archive="${backup_base}.tar.gz"
   metadata="${backup_base}.info.txt"
-  checksums="${backup_base}.sha256"
 
   echo
   echo "========== LOCAL BACKUP =========="
@@ -422,11 +420,9 @@ create_local_backups() {
     printf 'Source archive: %s\n' "$archive"
   } >"$metadata"
 
-  sha256sum "$bundle" "$archive" "$metadata" >"$checksums"
 
   log "Git bundle: $bundle"
   log "Source archive: $archive"
-  log "Checksums: $checksums"
 }
 
 push_run_to_github() {
