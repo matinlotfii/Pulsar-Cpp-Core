@@ -36,9 +36,20 @@ done
 command -v xinput >/dev/null 2>&1 || exit 0
 
 reload_display_env() {
+  # PULSAR_SAFE_TOUCH_STATE_LOADER_V2
+  local key value
   [[ -f "$PULSAR_DATA_DIR/displays.env" ]] || return 1
-  # shellcheck disable=SC1090
-  source "$PULSAR_DATA_DIR/displays.env"
+  while IFS='=' read -r key value; do
+    case "$key" in
+      PULSAR_SETTINGS_OUTPUT)
+        if [[ "$value" == \'*\' && ${#value} -ge 2 ]]; then
+          value="${value:1:${#value}-2}"
+        fi
+        PULSAR_SETTINGS_OUTPUT="$value"
+        ;;
+    esac
+  done <"$PULSAR_DATA_DIR/displays.env"
+  [[ -n "${PULSAR_SETTINGS_OUTPUT:-}" ]]
 }
 
 reload_display_env || exit 0

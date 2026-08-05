@@ -43,8 +43,9 @@ preferred_mode() {
 }
 
 best_rate() {
+  # PULSAR_HIGH_REFRESH_SELECTION_V2
   local output="$1" mode="$2" role="$3"
-  local rates
+  local rates requested=""
   rates="$(awk -v out="$output" -v mode="$mode" '
     function clean(v) {gsub(/[^0-9.]/,"",v); return v}
     $1==out && $2=="connected" {inside=1; next}
@@ -58,11 +59,26 @@ best_rate() {
     }
   ' <<<"$state")"
   [[ -n "$rates" ]] || return 0
-  if [[ "$role" == "display" ]]; then
-    awk '$1 >= 59 && $1 <= 61 {print; exit}' <<<"$(sort -nr <<<"$rates")" || true
-  else
-    awk '$1 <= 120.1 && $1 >= 59 {print; exit}' <<<"$(sort -nr <<<"$rates")" || true
+
+  case "$role" in
+    display) requested="${PULSAR_MAIN_RATE:-}" ;;
+    ar-glass-*) requested="${PULSAR_AR_RATE:-}" ;;
+  esac
+
+  if [[ -n "$requested" ]] &&
+     awk -v wanted="$requested" '
+       function abs(v) { return v < 0 ? -v : v }
+       abs(($1 + 0) - (wanted + 0)) < 0.15 { found=1 }
+       END { exit found ? 0 : 1 }
+     ' <<<"$rates"; then
+    printf '%s
+' "$requested"
+    return 0
   fi
+
+  # Use the highest EDID-advertised refresh up to 240 Hz.
+  awk '$1 >= 50 && $1 <= 240.1 {print; exit}' \
+    <<<"$(sort -nr <<<"$rates")" || true
 }
 
 mode_dimensions() {
@@ -290,6 +306,8 @@ active_csv="$(IFS=,; echo "${active_outputs[*]}")"
 glass_csv="$(IFS=,; echo "${active_glasses[*]}")"
 connector_csv="$(IFS=,; echo "${connectors[*]}")"
 panel_spec_string="$(IFS=';'; echo "${panel_specs[*]}")"
+# PULSAR_SHELL_SAFE_PANEL_SPECS_V2
+printf -v panel_spec_shell '%q' "$panel_spec_string"
 main_output="${display:-${ar1:-${ar2:-}}}"
 generation="$(date +%s%N)"
 
@@ -346,7 +364,7 @@ PULSAR_VIEWER_CANVAS_Y=$canvas_y
 PULSAR_VIEWER_CANVAS_WIDTH=$live_canvas_w
 PULSAR_VIEWER_CANVAS_HEIGHT=$live_canvas_h
 PULSAR_VIEWER_CANVAS_GEOMETRY=${live_canvas_w}x${live_canvas_h}+${canvas_x}+${canvas_y}
-PULSAR_VIEWER_PANEL_SPECS=$panel_spec_string
+PULSAR_VIEWER_PANEL_SPECS=$panel_spec_shell
 PULSAR_AUX_OUTPUTS=$glass_csv
 PULSAR_AUX_COUNT=${#active_glasses[@]}
 PULSAR_AUX_LAYOUT=extend

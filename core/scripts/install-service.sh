@@ -73,14 +73,17 @@ install -m 0644 "$PULSAR_ROOT/core/config/99-pulsar-touch-hotplug.rules" "$touch
 systemctl daemon-reload
 systemctl enable pulsar-kiosk.service
 
-# A deploy only needs to refresh the unit files and their absolute project path.
-# First-time installation still performs the machine-level setup below.
+# PULSAR_ALWAYS_REFRESH_TOUCH_V2
+# Touch rules and HID modules must also be refreshed during normal deploys.
+modprobe usbhid 2>/dev/null || true
+modprobe hid_multitouch 2>/dev/null || true
+udevadm control --reload-rules || true
+udevadm trigger --subsystem-match=usb || true
+udevadm trigger --subsystem-match=input || true
+systemctl start pulsar-touch-hotplug.service || true
+
 if ((refresh_only == 0)); then
   "$PULSAR_ROOT/core/scripts/configure-network-boot.sh" || true
-  udevadm control --reload-rules || true
-  udevadm trigger --subsystem-match=usb || true
-  udevadm trigger --subsystem-match=input || true
-  systemctl start pulsar-touch-hotplug.service || true
 fi
 
 if systemctl is-enabled --quiet display-manager.service 2>/dev/null; then

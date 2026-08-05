@@ -15,7 +15,9 @@ session_shell_pid_file="$PULSAR_DATA_DIR/session-shell.pid"
 browser_pid_file="$PULSAR_DATA_DIR/browser.pid"
 
 place_sbs_window() {
-  return 0
+  # PULSAR_MULTI_OUTPUT_WINDOW_PLACEMENT_V2
+  [[ -x "$PULSAR_ROOT/core/scripts/place-sbs-window.py" ]] || return 0
+  "$PULSAR_ROOT/core/scripts/place-sbs-window.py"     >>"$PULSAR_LOG_FILE" 2>&1 || true
 }
 
 cleanup() {
@@ -316,7 +318,8 @@ configure_audio_stack
 : >"$touch_log_file"
 "$PULSAR_ROOT/core/scripts/configure-touch.sh" >>"$touch_log_file" 2>&1 || true
 if [[ "${PULSAR_TOUCH_HOTPLUG_WATCH:-0}" == "1" ]]; then
-  "$PULSAR_ROOT/core/scripts/configure-touch.sh" --watch --interval 30 >>"$touch_log_file" 2>&1 &
+  # PULSAR_TOUCH_FAST_WATCH_V2
+  "$PULSAR_ROOT/core/scripts/configure-touch.sh" --watch     --interval "${PULSAR_TOUCH_WATCH_INTERVAL:-2}"     >>"$touch_log_file" 2>&1 &
   touch_watch_pid=$!
 fi
 
