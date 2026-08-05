@@ -17,3 +17,6 @@ tree.txt
 
 # Server/runtime backups
 .pulsar-backups/
+run-logs/
+pulsar-*-diagnostics-*.tar.gz
+pulsar-camera-render-touch-*.tar.gz

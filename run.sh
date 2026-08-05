@@ -1,5 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
+
+# PULSAR_PERSISTENT_RUN_LOG_V1
+# Keep every run transcript locally. Runtime logs are intentionally excluded
+# from Git; only project source/configuration changes are committed and pushed.
+if [[ "${PULSAR_RUN_LOGGING_ACTIVE:-0}" != "1" ]]; then
+  early_root="$(cd "$(dirname "$0")" && pwd)"
+  run_log_dir="$early_root/run-logs"
+  mkdir -p "$run_log_dir"
+  run_log_file="$run_log_dir/run-$(date +%Y%m%d-%H%M%S).log"
+  export PULSAR_RUN_LOGGING_ACTIVE=1
+  export PULSAR_RUN_LOG_FILE="$run_log_file"
+  exec > >(tee -a "$run_log_file") 2>&1
+  printf 'Pulsar run log: %s\n' "$run_log_file"
+fi
 # =============================================================================
 # Pulsar professional runner
 #
