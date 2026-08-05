@@ -190,25 +190,44 @@ else
   echo "[REMOTE] C++ restart not required."
 fi
 
+# PULSAR_V8R_ROBUST_READY_V1
+# Health/process readiness is authoritative. Renderer log markers are diagnostic
+# only because they can be emitted before start_line or after a slow USB start.
 ready=0
 for _ in $(seq 1 240); do
   pid="$(cat "$PID_FILE" 2>/dev/null || echo 0)"
   if systemctl is-active --quiet "$SERVICE" && \
      [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null && \
      curl -fsS --max-time 1 http://127.0.0.1:4173/health >/dev/null 2>&1; then
-    if ((code_changed || config_changed)); then
-      recent="$(tail -n "+$((start_line+1))" "$APP_LOG" 2>/dev/null || true)"
-      if [[ "$(grep -c 'GPU pipeline ready' <<<"$recent")" -ge 2 ]] && \
-         grep -q 'viewer-layout-ready=1' <<<"$recent"; then
-        ready=1; break
-      fi
-    else
-      ready=1; break
+    # Generate/refresh the independent monitor + two-glasses topology after the
+    # new core is live. This does not restart Xorg or the browser.
+    "$ROOT/core/scripts/configure-displays.sh" >>"$APP_LOG" 2>&1 || true
+
+    if [[ -s "$ROOT/core/data/viewer-layout.env" ]] && \
+       grep -q '^PULSAR_VIEWER_PROFILE_COUNT=3$' \
+         "$ROOT/core/data/viewer-layout.env" && \
+       [[ -s "$ROOT/core/data/displays.env" ]]; then
+      ready=1
+      break
     fi
   fi
   sleep 0.5
 done
-((ready)) || false
+
+if ((ready == 0)); then
+  echo "ERROR: core/health or viewer layout did not become ready."
+  false
+fi
+
+# Give connected cameras time to publish startup diagnostics, but never reject
+# a healthy deployment merely because a log marker arrived outside the window.
+sleep 2
+recent="$(tail -n "+$((start_line+1))" "$APP_LOG" 2>/dev/null || true)"
+gpu_ready_count="$(grep -c 'GPU pipeline ready' <<<"$recent" || true)"
+printf '[REMOTE] healthy core ready; GPU-ready markers=%s; viewer-layout=%s\n' \
+  "$gpu_ready_count" \
+  "$(grep '^PULSAR_VIEWER_CANVAS_GEOMETRY=' \
+      "$ROOT/core/data/viewer-layout.env" 2>/dev/null | cut -d= -f2-)"
 
 if ((ui_changed)); then
   echo "[REMOTE] Restarting only the kiosk browser to load the two-glasses UI."

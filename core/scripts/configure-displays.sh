@@ -181,13 +181,27 @@ canvas_y=0
 fb_w=$((canvas_x + canvas_w))
 fb_h=$((settings_h > canvas_h ? settings_h : canvas_h))
 
-# Disable viewer outputs first, apply the UI output, then resize framebuffer.
-for output in "${connected_outputs[@]}"; do
-  [[ "$output" == "$settings" ]] && continue
-  xrandr --output "$output" --off 2>/dev/null || true
-done
+# PULSAR_V8R_NO_BLACKOUT_LAYOUT_V1
+# Grow the framebuffer before adding outputs, but do not switch off already
+# active glasses. This keeps the current image visible during DP hotplug.
+read -r current_fb_w current_fb_h < <(
+  awk '/^Screen 0:/ {
+    for (i=1;i<=NF;i++) {
+      if ($i=="current") {
+        gsub(/,/,"",$(i+1)); gsub(/,/,"",$(i+3));
+        print $(i+1),$(i+3); exit
+      }
+    }
+  }' <<<"$state"
+)
+current_fb_w="${current_fb_w:-1}"
+current_fb_h="${current_fb_h:-1}"
+
 xrandr --output "$settings" --mode "$settings_mode" --pos 0x0 --primary
-xrandr --fb "${fb_w}x${fb_h}" 2>/dev/null || true
+
+if ((fb_w > current_fb_w || fb_h > current_fb_h)); then
+  xrandr --fb "${fb_w}x${fb_h}" 2>/dev/null || true
+fi
 
 cursor_x="$canvas_x"
 for index in 0 1 2; do
@@ -254,7 +268,8 @@ for index in 0 1 2; do
   [[ "${connected_flags[$index]}" == "1" ]] || continue
   ((logical_hs[index] > live_canvas_h)) && live_canvas_h="${logical_hs[$index]}"
 done
-xrandr --fb "$((canvas_x + live_canvas_w))x$((settings_h > live_canvas_h ? settings_h : live_canvas_h))" 2>/dev/null || true
+desired_fb_w=$((canvas_x + live_canvas_w))
+desired_fb_h=$((settings_h > live_canvas_h ? settings_h : live_canvas_h))
 
 # Turn off connected outputs not assigned to UI/monitor/two glasses.
 for output in "${connected_outputs[@]}"; do
@@ -262,6 +277,10 @@ for output in "${connected_outputs[@]}"; do
   contains "$output" "${connectors[@]}" && continue
   xrandr --output "$output" --off 2>/dev/null || true
 done
+
+# Shrink only after removed/unassigned outputs are off. Assigned glasses never
+# blink just because another DP connector changed.
+xrandr --fb "${desired_fb_w}x${desired_fb_h}" 2>/dev/null || true
 
 active_csv="$(IFS=,; echo "${active_outputs[*]}")"
 glass_csv="$(IFS=,; echo "${active_glasses[*]}")"
