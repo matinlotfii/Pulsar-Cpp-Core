@@ -12,15 +12,20 @@ audio_watch_pid=""
 touch_watch_pid=""
 touch_log_file="$PULSAR_DATA_DIR/touch.log"
 session_shell_pid_file="$PULSAR_DATA_DIR/session-shell.pid"
+browser_pid_file="$PULSAR_DATA_DIR/browser.pid"
 
 place_sbs_window() {
   return 0
 }
 
 cleanup() {
-  kill "$touch_watch_pid" "$audio_watch_pid" "$display_watch_pid" "$browser_pid" "$core_pid" "$openbox_pid" "$unclutter_pid" 2>/dev/null || true
-  rm -f "$PULSAR_PID_FILE"
-  rm -f "$session_shell_pid_file"
+  current_display_watch="$(cat "$PULSAR_DATA_DIR/display-hotplug.pid" 2>/dev/null || true)"
+  current_browser_pid="$(cat "$browser_pid_file" 2>/dev/null || true)"
+  kill "$touch_watch_pid" "$audio_watch_pid" "$display_watch_pid" \
+       "$current_display_watch" "$current_browser_pid" "$browser_pid" \
+       "$core_pid" "$openbox_pid" "$unclutter_pid" 2>/dev/null || true
+  rm -f "$PULSAR_PID_FILE" "$PULSAR_DATA_DIR/display-hotplug.pid"
+  rm -f "$session_shell_pid_file" "$browser_pid_file"
 }
 
 request_session_rebuild() {
@@ -316,9 +321,10 @@ if [[ "${PULSAR_HIDE_CURSOR:-1}" == "1" ]] && [[ -x "$PULSAR_ROOT/core/scripts/h
 fi
 "$browser" "${browser_flags[@]}" >>"$PULSAR_DATA_DIR/browser.log" 2>&1 &
 browser_pid=$!
+echo "$browser_pid" >"$browser_pid_file"
 
 if [[ "${PULSAR_DISPLAY_HOTPLUG_WATCH:-1}" == "1" ]]; then
-  watch_display_topology "$core_pid" &
+  "$PULSAR_ROOT/core/scripts/display-hotplug-watch.sh" >>"$PULSAR_LOG_FILE" 2>&1 &
   display_watch_pid=$!
 fi
 
@@ -327,4 +333,29 @@ if [[ "${PULSAR_AUDIO_HOTPLUG_WATCH:-1}" == "1" ]]; then
   audio_watch_pid=$!
 fi
 
-wait "$core_pid"
+# PULSAR_CORE_ONLY_RESTART_SUPERVISOR_V1
+# Deploys can replace pulsar-core without restarting Xorg, Openbox or Chrome.
+restart_request="$PULSAR_DATA_DIR/restart-core.request"
+while true; do
+  core_status=0
+  wait "$core_pid" || core_status=$?
+
+  if [[ -f "$restart_request" ]]; then
+    rm -f "$restart_request"
+    sleep 0.15
+    nohup "${core_command[@]}" >>"$PULSAR_LOG_FILE" 2>&1 &
+    core_pid=$!
+    echo "$core_pid" >"$PULSAR_PID_FILE"
+
+    if wait_for_core; then
+      place_sbs_window
+      printf '%s\n' "Pulsar core-only restart completed; Xorg/UI remained active." >>"$PULSAR_LOG_FILE"
+      continue
+    fi
+
+    tail -120 "$PULSAR_LOG_FILE" >&2 || true
+    exit 1
+  fi
+
+  exit "$core_status"
+done

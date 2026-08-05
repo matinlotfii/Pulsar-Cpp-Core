@@ -988,7 +988,7 @@ bool CameraDevice::configure() {
     streamBufferMode = "OldestFirstOverwrite";
   }
 
-  constexpr uint64_t kAcquisitionBufferCount = 2;
+  constexpr uint64_t kAcquisitionBufferCount = 4;
 
   if (GXSetAcqusitionBufferNumber(device_, kAcquisitionBufferCount) !=
       GX_STATUS_SUCCESS) {

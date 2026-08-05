@@ -1030,12 +1030,11 @@ bool containsInsensitive(const std::string& text, const std::string& needle) {
 
 using RoutingAssignments = std::unordered_map<std::string, std::string>;
 
-const std::array<std::pair<std::string_view, std::string_view>, 5> kRoutingRoleVars{{
+const std::array<std::pair<std::string_view, std::string_view>, 4> kRoutingRoleVars{{
     {"ui", "PULSAR_ROLE_UI_OUTPUT"},
     {"display", "PULSAR_ROLE_DISPLAY_OUTPUT"},
     {"ar-glass-1", "PULSAR_ROLE_AR1_OUTPUT"},
     {"ar-glass-2", "PULSAR_ROLE_AR2_OUTPUT"},
-    {"ar-glass-3", "PULSAR_ROLE_AR3_OUTPUT"},
 }};
 
 std::string roleEnvKey(std::string_view role) {
@@ -1107,13 +1106,17 @@ std::string preferredRoleForConnector(const std::string& connector, const Routin
 
 std::string activeRoleForConnector(const std::string& connector,
                                    const std::unordered_map<std::string, std::string>& displayEnv) {
-  const auto settings = displayEnv.find("PULSAR_SETTINGS_OUTPUT");
-  if (settings != displayEnv.end() && settings->second == connector) return "ui";
-  const auto main = displayEnv.find("PULSAR_MAIN_OUTPUT");
-  if (main != displayEnv.end() && main->second == connector) return "display";
-  const auto aux = splitList(displayEnv.count("PULSAR_AUX_OUTPUTS") ? displayEnv.at("PULSAR_AUX_OUTPUTS") : "", ',');
-  for (size_t i = 0; i < aux.size() && i < 3; ++i) {
-    if (aux[i] == connector) return "ar-glass-" + std::to_string(i + 1);
+  const std::array<std::pair<const char*, const char*>, 4> roles{{
+      {"PULSAR_ROLE_UI_OUTPUT", "ui"},
+      {"PULSAR_ROLE_DISPLAY_OUTPUT", "display"},
+      {"PULSAR_ROLE_AR1_OUTPUT", "ar-glass-1"},
+      {"PULSAR_ROLE_AR2_OUTPUT", "ar-glass-2"},
+  }};
+  for (const auto& [key, role] : roles) {
+    const auto iterator = displayEnv.find(key);
+    if (iterator != displayEnv.end() && iterator->second == connector) {
+      return role;
+    }
   }
   return "none";
 }
@@ -1193,40 +1196,62 @@ std::vector<OutputEndpointSnapshot> buildOutputEndpoints(const core::StateSnapsh
   const auto displayEnv = readEnvFile(dataRootPath() / "displays.env");
   const auto audioEnv = readEnvFile(dataRootPath() / "audio.env");
 
+  struct RoleDefinition {
+    const char* id;
+    const char* label;
+    const char* connectorKey;
+    const char* connectedKey;
+    size_t profileIndex;
+  };
+  const std::array<RoleDefinition, 3> definitions{{
+      {"display", "Display", "PULSAR_ROLE_DISPLAY_OUTPUT",
+       "PULSAR_ROLE_DISPLAY_CONNECTED", 0},
+      {"ar-glass-1", "AR Glass 1", "PULSAR_ROLE_AR1_OUTPUT",
+       "PULSAR_ROLE_AR1_CONNECTED", 1},
+      {"ar-glass-2", "AR Glass 2", "PULSAR_ROLE_AR2_OUTPUT",
+       "PULSAR_ROLE_AR2_CONNECTED", 2},
+  }};
+
+  const auto activeOutputs = splitList(
+      displayEnv.count("PULSAR_VIEWER_ACTIVE_OUTPUTS")
+          ? displayEnv.at("PULSAR_VIEWER_ACTIVE_OUTPUTS")
+          : "",
+      ',');
+
   std::vector<OutputEndpointSnapshot> outputs;
-  const auto mainOutput = displayEnv.count("PULSAR_MAIN_OUTPUT") ? displayEnv.at("PULSAR_MAIN_OUTPUT") : "";
-  if (!mainOutput.empty()) {
+  outputs.reserve(definitions.size());
+  for (const auto& definition : definitions) {
+    const std::string connector =
+        displayEnv.count(definition.connectorKey)
+            ? displayEnv.at(definition.connectorKey)
+            : "";
+    bool connected = false;
+    if (displayEnv.count(definition.connectedKey)) {
+      connected = displayEnv.at(definition.connectedKey) == "1";
+    } else if (!connector.empty()) {
+      connected = std::find(activeOutputs.begin(), activeOutputs.end(), connector) !=
+                  activeOutputs.end();
+    }
+    const size_t index = std::min<size_t>(definition.profileIndex, 2);
     outputs.push_back(OutputEndpointSnapshot{
-        "display",
-        "Display",
-        mainOutput,
-        state.display.outputModes[0],
+        definition.id,
+        definition.label,
+        connector,
+        state.display.outputModes[index],
         "",
-        0,
-        true,
-        state.display.outputMuted[0],
-        state.display.outputButtonSounds[0],
-        state.display.outputVolumes[0],
+        index,
+        connected,
+        state.display.outputMuted[index],
+        state.display.outputButtonSounds[index],
+        state.display.outputVolumes[index],
     });
   }
 
-  const auto auxOutputs = splitList(displayEnv.count("PULSAR_AUX_OUTPUTS") ? displayEnv.at("PULSAR_AUX_OUTPUTS") : "", ',');
-  for (size_t i = 0; i < auxOutputs.size() && i < 3; ++i) {
-    outputs.push_back(OutputEndpointSnapshot{
-        "ar-glass-" + std::to_string(i + 1),
-        "AR Glass " + std::to_string(i + 1),
-        auxOutputs[i],
-        state.display.outputModes[std::min<size_t>(i + 1, 3)],
-        "",
-        std::min<size_t>(i + 1, 3),
-        true,
-        state.display.outputMuted[std::min<size_t>(i + 1, 3)],
-        state.display.outputButtonSounds[std::min<size_t>(i + 1, 3)],
-        state.display.outputVolumes[std::min<size_t>(i + 1, 3)],
-    });
-  }
-
-  const auto sinkNames = splitList(audioEnv.count("PULSAR_AUDIO_SINKS") ? audioEnv.at("PULSAR_AUDIO_SINKS") : "", ',');
+  const auto sinkNames = splitList(
+      audioEnv.count("PULSAR_AUDIO_SINKS")
+          ? audioEnv.at("PULSAR_AUDIO_SINKS")
+          : "",
+      ',');
   auto assignSink = [&](const std::string& sink, const std::string& preferredId) {
     for (auto& output : outputs) {
       if (output.id == preferredId && output.sink.empty()) {
@@ -1240,16 +1265,18 @@ std::vector<OutputEndpointSnapshot> buildOutputEndpoints(const core::StateSnapsh
   for (const auto& sink : sinkNames) {
     if (containsInsensitive(sink, "00_1f.3")) continue;
     if ((containsInsensitive(sink, "xreal") || containsInsensitive(sink, "usb")) &&
-        (assignSink(sink, "ar-glass-1") || assignSink(sink, "ar-glass-2") || assignSink(sink, "ar-glass-3"))) {
+        (assignSink(sink, "ar-glass-1") ||
+         assignSink(sink, "ar-glass-2"))) {
       continue;
     }
     if (assignSink(sink, "display")) continue;
-    if (assignSink(sink, "ar-glass-1") || assignSink(sink, "ar-glass-2") || assignSink(sink, "ar-glass-3")) continue;
+    if (assignSink(sink, "ar-glass-1") ||
+        assignSink(sink, "ar-glass-2")) {
+      continue;
+    }
   }
 
-  // PULSAR_STATE_FAST_CACHE_V2
-  // Do not fork pactl processes for every /api/state request. State writes
-  // already update volume/mute and explicit output actions still call pactl.
+  // No xrandr or pactl subprocess is spawned on the normal /api/state path.
   return outputs;
 }
 
@@ -1338,16 +1365,33 @@ std::vector<DisplayPortSnapshot> readDisplayPortsUncached() {
 }
 
 std::vector<DisplayPortSnapshot> readDisplayPorts() {
+  // PULSAR_DISPLAY_CACHE_INVALIDATION_V1
+  // XRandR is refreshed immediately after displays.env changes; otherwise the
+  // cached result avoids periodic Xorg stalls from normal UI polling.
   using Clock = std::chrono::steady_clock;
   static std::mutex cacheMutex;
   static Clock::time_point updated{};
+  static std::filesystem::file_time_type displayEnvWrite{};
   static std::vector<DisplayPortSnapshot> cached;
+
   const auto now = Clock::now();
+  bool topologyChanged = false;
+  std::filesystem::file_time_type currentWrite{};
+  try {
+    const auto path = dataRootPath() / "displays.env";
+    if (std::filesystem::exists(path)) {
+      currentWrite = std::filesystem::last_write_time(path);
+      topologyChanged = currentWrite != displayEnvWrite;
+    }
+  } catch (...) {
+  }
 
   std::lock_guard<std::mutex> lock(cacheMutex);
-  if (cached.empty() || now - updated >= std::chrono::seconds(60)) {
+  if (cached.empty() || topologyChanged ||
+      now - updated >= std::chrono::seconds(30)) {
     cached = readDisplayPortsUncached();
     updated = now;
+    displayEnvWrite = currentWrite;
   }
   return cached;
 }
@@ -1498,7 +1542,6 @@ std::optional<size_t> outputProfileIndexFromId(const std::string& id) {
   if (id == "display") return 0;
   if (id == "ar-glass-1") return 1;
   if (id == "ar-glass-2") return 2;
-  if (id == "ar-glass-3") return 3;
   return std::nullopt;
 }
 

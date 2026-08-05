@@ -172,7 +172,7 @@ function AppRoot() {
       }
     };
     void loadBackendState();
-    const refreshMs = activePage === "system" || activePage === "display-settings" ? 5000 : 15000;
+    const refreshMs = activePage === "display-settings" ? 500 : activePage === "system" ? 3000 : 5000;
     const timer = window.setInterval(loadBackendState, refreshMs);
     return () => {
       window.clearInterval(timer);
@@ -281,8 +281,7 @@ function AppRoot() {
           port.role === "ui" ||
           port.role === "display" ||
           port.role === "ar-glass-1" ||
-          port.role === "ar-glass-2" ||
-          port.role === "ar-glass-3"
+          port.role === "ar-glass-2"
             ? port.role
             : "none";
         return {
