@@ -80,7 +80,10 @@ run_remote_apply() {
   remote_script+="; chmod +x ./run.sh ./core/scripts/*.sh"
 
   if [[ "${SYNC_REMOTE_BUILD_ON_SYNC:-1}" == "1" ]]; then
-    remote_script+="; PULSAR_USE_PREBUILT_UI=1 ./run.sh build"
+    if [[ "${SYNC_REMOTE_BUILD_UI_ON_SYNC:-1}" == "1" ]]; then
+      remote_script+="; ./run.sh build-ui"
+    fi
+    remote_script+="; ./run.sh build"
     remote_script+="; LD_LIBRARY_PATH=${root_q}/camera/vendor/galaxy/lib:\${LD_LIBRARY_PATH:-} ldd ./core/build/pulsar-core | tee /tmp/pulsar-ldd.txt"
     remote_script+="; if grep -q 'not found' /tmp/pulsar-ldd.txt; then echo 'ERROR: pulsar-core has missing runtime libraries.' >&2; exit 1; fi"
   fi

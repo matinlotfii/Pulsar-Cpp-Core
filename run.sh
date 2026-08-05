@@ -56,6 +56,10 @@ RUN_GIT_MAX_FILE_MB="${RUN_GIT_MAX_FILE_MB:-95}"
 #   RUN_GIT_COMMIT_MESSAGE="Reason" ./run.sh
 RUN_GIT_COMMIT_MESSAGE="${RUN_GIT_COMMIT_MESSAGE:-}"
 
+# Keep all compilation on the RTX project computer by default.
+# Set RUN_BUILD_UI_LOCALLY=1 only when a local UI build is explicitly desired.
+RUN_BUILD_UI_LOCALLY="${RUN_BUILD_UI_LOCALLY:-0}"
+
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 source "$ROOT/core/scripts/common.sh"
 load_config
@@ -110,6 +114,11 @@ ensure_run_sync_target() {
   upsert_sync_config_value "$config" "SYNC_REMOTE_PORT" "$RUN_SYNC_REMOTE_PORT"
   upsert_sync_config_value "$config" "SYNC_REMOTE_DIR" "$RUN_SYNC_REMOTE_DIR"
   upsert_sync_config_value "$config" "SYNC_REMOTE_GIT_DIR" "$RUN_SYNC_REMOTE_GIT_DIR"
+  upsert_sync_config_value "$config" "SYNC_BUILD_UI_LOCALLY" "0"
+  upsert_sync_config_value "$config" "SYNC_REMOTE_BUILD_UI_ON_SYNC" "1"
+  upsert_sync_config_value "$config" "SYNC_REMOTE_BUILD_ON_SYNC" "1"
+  upsert_sync_config_value "$config" "SYNC_REMOTE_RESTART_ON_SYNC" "1"
+  upsert_sync_config_value "$config" "SYNC_INCLUDE_LOCAL_CONFIG" "1"
 }
 
 load_sync_config() {
@@ -306,12 +315,14 @@ create_run_commit_and_tag() {
   echo
 
 # PULSAR_LOCAL_UI_BUILD_BEGIN
-# Source changes are built locally before Git staging and deployment.
-# Remote builds receive PULSAR_USE_PREBUILT_UI=1 and skip frontend compilation.
-if [[ "${PULSAR_USE_PREBUILT_UI:-0}" != "1" ]]; then
+# By default the amin workstation only edits, commits and transfers source.
+# Compilation and runtime verification happen on the RTX project computer.
+if [[ "$RUN_BUILD_UI_LOCALLY" == "1" ]]; then
   echo
   echo "========== LOCAL UI BUILD =========="
   "$ROOT/core/scripts/build-ui.sh"
+else
+  log "Skipping local UI build; the project computer will build UI and C++."
 fi
 # PULSAR_LOCAL_UI_BUILD_END
 
