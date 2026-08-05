@@ -415,8 +415,9 @@ void CameraDevice::notifyPreviewDemand() {
 }
 
 void CameraDevice::loop() {
-  elevateThreadPriority();
+  bool priorityElevated = false;
   if (mockMode_) {
+    elevateThreadPriority();
     mockLoop();
     return;
   }
@@ -456,6 +457,14 @@ void CameraDevice::loop() {
     if (device_ == nullptr && !connect()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(700));
       continue;
+    }
+
+    // PULSAR_CAMERA_RT_AFTER_SDK_INIT_V1
+    // Galaxy/CUDA helper threads are already created, so only this acquisition
+    // loop becomes realtime and Xorg cannot inherit/starve behind RR99 workers.
+    if (!priorityElevated) {
+      elevateThreadPriority();
+      priorityElevated = true;
     }
 
     const auto desired = controls_();
@@ -506,7 +515,8 @@ void CameraDevice::loop() {
           gpuRequested_ && !gpuDisabledAfterFailure_ &&
           gpuPipeline_ != nullptr && bayer8(newest->nPixelFormat);
 
-      if (canStageGpu && gpuPipeline_->stageInput(
+      // PULSAR_DIRECT_SDK_H2D_PUBLISH_V1
+      if (canStageGpu && gpuPipeline_->stageInputDirectToDevice(
                              static_cast<const uint8_t*>(newest->pImgBuf),
                              static_cast<std::size_t>(newest->nImgSize),
                              gpuStageError)) {
@@ -557,28 +567,30 @@ void CameraDevice::loop() {
         const auto [outputWidth, outputHeight] =
             fitOutputSize(sourceWidth, sourceHeight, maxWidth_, maxHeight_);
         std::string gpuError;
-        const uint8_t* gpuOutput = nullptr;
+        const std::size_t gpuOutputCapacity =
+            static_cast<std::size_t>(outputWidth) * outputHeight * 3u;
+        auto gpuOutput = acquirePublishBuffer(gpuOutputCapacity);
         std::size_t gpuOutputBytes = 0;
 
-        if (gpuInputStaged &&
+        if (gpuInputStaged && gpuOutput &&
             gpuPatternFor(copiedFrame.nPixelFormat, colorFilter_, pattern) &&
-            gpuPipeline_->processStaged(
+            gpuPipeline_->processStagedInto(
                 sourceWidth,
                 sourceHeight,
                 pattern,
                 outputWidth,
                 outputHeight,
-                gpuOutput,
+                gpuOutput->data(),
+                gpuOutput->size(),
                 gpuOutputBytes,
                 gpuTimings,
                 gpuError)) {
           convertEnd = std::chrono::steady_clock::now();
           timing.hostDebayerDoneNs = steadyNs(convertEnd);
-          publish(
+          publishOwned(
               outputWidth,
               outputHeight,
-              gpuOutput,
-              gpuOutputBytes,
+              std::move(gpuOutput),
               true,
               timing);
           publishEnd = std::chrono::steady_clock::now();
@@ -1258,6 +1270,22 @@ void CameraDevice::publish(uint32_t width, uint32_t height, const std::vector<ui
   publish(width, height, rgb.data(), rgb.size(), online, timing);
 }
 
+std::shared_ptr<std::vector<uint8_t>> CameraDevice::acquirePublishBuffer(
+    std::size_t requiredBytes) {
+  for (std::size_t offset = 0; offset < publishRgbPool_.size(); ++offset) {
+    const std::size_t index =
+        (publishRgbPoolNext_ + offset) % publishRgbPool_.size();
+    auto& slot = publishRgbPool_[index];
+    if (slot && slot.use_count() != 1) continue;
+    if (!slot) slot = std::make_shared<std::vector<uint8_t>>();
+    slot->resize(requiredBytes);
+    publishRgbPoolNext_ = (index + 1) % publishRgbPool_.size();
+    return slot;
+  }
+
+  return std::make_shared<std::vector<uint8_t>>(requiredBytes);
+}
+
 void CameraDevice::publish(
     uint32_t width,
     uint32_t height,
@@ -1272,37 +1300,38 @@ void CameraDevice::publish(
     return;
   }
 
-  const double scale = std::min({1.0, static_cast<double>(maxWidth_) / width, static_cast<double>(maxHeight_) / height});
-  const uint32_t outWidth = std::max<uint32_t>(1, static_cast<uint32_t>(width * scale));
-  const uint32_t outHeight = std::max<uint32_t>(1, static_cast<uint32_t>(height * scale));
+  const double scale = std::min({
+      1.0,
+      static_cast<double>(maxWidth_) / width,
+      static_cast<double>(maxHeight_) / height});
+  const uint32_t outWidth =
+      std::max<uint32_t>(1, static_cast<uint32_t>(width * scale));
+  const uint32_t outHeight =
+      std::max<uint32_t>(1, static_cast<uint32_t>(height * scale));
   const uint8_t* data = rgb;
   if (outWidth != width || outHeight != height) {
     resizeRgbBilinearInto(rgb, width, height, outWidth, outHeight, resized_);
     data = resized_.data();
   }
+
   const std::size_t outputBytes =
       static_cast<std::size_t>(outWidth) * outHeight * 3u;
-  std::shared_ptr<std::vector<uint8_t>> rgbCopy;
+  auto output = acquirePublishBuffer(outputBytes);
+  std::memcpy(output->data(), data, outputBytes);
+  publishOwned(outWidth, outHeight, std::move(output), online, timing);
+}
 
-  // Use the next free frame buffer instead of allocating several megabytes
-  // for every frame. A slot is reused only when the pool is its sole owner,
-  // so published frames remain immutable for renderer/JPEG consumers.
-  for (std::size_t offset = 0; offset < publishRgbPool_.size(); ++offset) {
-    const std::size_t index =
-        (publishRgbPoolNext_ + offset) % publishRgbPool_.size();
-    auto& slot = publishRgbPool_[index];
-    if (slot && slot.use_count() != 1) continue;
-    if (!slot) slot = std::make_shared<std::vector<uint8_t>>();
-    slot->resize(outputBytes);
-    std::memcpy(slot->data(), data, outputBytes);
-    rgbCopy = slot;
-    publishRgbPoolNext_ = (index + 1) % publishRgbPool_.size();
-    break;
-  }
-
-  if (!rgbCopy) {
-    rgbCopy = std::make_shared<std::vector<uint8_t>>(outputBytes);
-    std::memcpy(rgbCopy->data(), data, outputBytes);
+void CameraDevice::publishOwned(
+    uint32_t width,
+    uint32_t height,
+    std::shared_ptr<std::vector<uint8_t>> rgb,
+    bool online,
+    FrameTiming timing) {
+  const std::size_t requiredBytes =
+      static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 3u;
+  if (!rgb || rgb->size() < requiredBytes) {
+    fail("publishOwned received an incomplete RGB frame");
+    return;
   }
 
   std::shared_ptr<const std::vector<uint8_t>> currentJpeg;
@@ -1310,13 +1339,14 @@ void CameraDevice::publish(
     std::lock_guard<std::mutex> lock(previewMutex_);
     currentJpeg = lastJpeg_;
   }
+
   auto frame = std::make_shared<Frame>();
-  frame->width = outWidth;
-  frame->height = outHeight;
+  frame->width = width;
+  frame->height = height;
   timing.hostPublishDoneNs = nowNs();
   frame->timestampNs = timing.hostPublishDoneNs;
   frame->timing = timing;
-  frame->rgb = std::move(rgbCopy);
+  frame->rgb = std::move(rgb);
   frame->jpeg = std::move(currentJpeg);
   {
     std::lock_guard<std::mutex> lock(mutex_);

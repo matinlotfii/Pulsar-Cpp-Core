@@ -42,6 +42,28 @@ class GpuBayerPipeline {
       std::size_t bytes,
       std::string& error);
 
+  // Copy the Galaxy SDK buffer directly to device memory before the SDK
+  // buffer is requeued. This avoids the expensive SDK->host-pinned memcpy.
+  bool stageInputDirectToDevice(
+      const uint8_t* bayer,
+      std::size_t bytes,
+      std::string& error);
+
+  // Process into caller-owned host storage. When the storage is reused by
+  // CameraDevice's frame pool, CUDA registers it once and writes D2H directly
+  // into the published frame, removing a second multi-megabyte host copy.
+  bool processStagedInto(
+      uint32_t sourceWidth,
+      uint32_t sourceHeight,
+      BayerPattern pattern,
+      uint32_t outputWidth,
+      uint32_t outputHeight,
+      uint8_t* outputRgb,
+      std::size_t outputCapacity,
+      std::size_t& outputBytes,
+      GpuBayerTimings& timings,
+      std::string& error);
+
   // Process the most recently staged frame. The returned pointer is valid
   // until this pipeline processes another frame or is destroyed.
   bool processStaged(

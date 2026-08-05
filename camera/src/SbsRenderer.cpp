@@ -118,6 +118,7 @@ class GlPboUploader {
         !load(glDeleteBuffers_, "glDeleteBuffers", error) ||
         !load(glBindBuffer_, "glBindBuffer", error) ||
         !load(glBufferData_, "glBufferData", error) ||
+        !load(glBufferSubData_, "glBufferSubData", error) ||
         !load(glMapBufferRange_, "glMapBufferRange", error) ||
         !load(glUnmapBuffer_, "glUnmapBuffer", error) ||
         !load(glPixelStorei_, "glPixelStorei", error) ||
@@ -175,23 +176,35 @@ class GlPboUploader {
       slot.capacities[bufferIndex] = bytes;
     }
 
-    void* mapped = glMapBufferRange_(
-        kGlPixelUnpackBuffer, 0, static_cast<GlSize>(bytes),
-        kGlMapWriteBit | kGlMapInvalidateBufferBit |
-            kGlMapUnsynchronizedBit);
-    if (mapped == nullptr) {
-      glBindBuffer_(kGlPixelUnpackBuffer, 0u);
-      SDL_GL_UnbindTexture(texture);
-      error = "glMapBufferRange returned null";
-      return false;
-    }
+    // PULSAR_DRIVER_MANAGED_PBO_UPLOAD_V1
+    // Let the NVIDIA driver schedule the host->PBO transfer. On Reverse PRIME
+    // this avoids CPU writes into a write-combined mapped BAR region, which
+    // measured about 4 ms per camera frame on this machine.
+    if (envEnabled("PULSAR_GL_PBO_DRIVER_UPLOAD", true)) {
+      glBufferSubData_(
+          kGlPixelUnpackBuffer,
+          0,
+          static_cast<GlSize>(bytes),
+          rgb);
+    } else {
+      void* mapped = glMapBufferRange_(
+          kGlPixelUnpackBuffer, 0, static_cast<GlSize>(bytes),
+          kGlMapWriteBit | kGlMapInvalidateBufferBit |
+              kGlMapUnsynchronizedBit);
+      if (mapped == nullptr) {
+        glBindBuffer_(kGlPixelUnpackBuffer, 0u);
+        SDL_GL_UnbindTexture(texture);
+        error = "glMapBufferRange returned null";
+        return false;
+      }
 
-    std::memcpy(mapped, rgb, bytes);
-    if (glUnmapBuffer_(kGlPixelUnpackBuffer) == 0u) {
-      glBindBuffer_(kGlPixelUnpackBuffer, 0u);
-      SDL_GL_UnbindTexture(texture);
-      error = "glUnmapBuffer reported corrupted PBO data";
-      return false;
+      std::memcpy(mapped, rgb, bytes);
+      if (glUnmapBuffer_(kGlPixelUnpackBuffer) == 0u) {
+        glBindBuffer_(kGlPixelUnpackBuffer, 0u);
+        SDL_GL_UnbindTexture(texture);
+        error = "glUnmapBuffer reported corrupted PBO data";
+        return false;
+      }
     }
 
     // RGB24 rows are not necessarily four-byte aligned (1431 * 3 = 4293).
@@ -231,6 +244,7 @@ class GlPboUploader {
   using DeleteBuffers = void (*)(int, const GlUInt*);
   using BindBuffer = void (*)(GlEnum, GlUInt);
   using BufferData = void (*)(GlEnum, GlSize, const void*, GlEnum);
+  using BufferSubData = void (*)(GlEnum, GlSize, GlSize, const void*);
   using MapBufferRange = void* (*)(GlEnum, GlSize, GlSize, GlBitfield);
   using UnmapBuffer = GlBoolean (*)(GlEnum);
   using PixelStorei = void (*)(GlEnum, int);
@@ -240,6 +254,7 @@ class GlPboUploader {
   DeleteBuffers glDeleteBuffers_ = nullptr;
   BindBuffer glBindBuffer_ = nullptr;
   BufferData glBufferData_ = nullptr;
+  BufferSubData glBufferSubData_ = nullptr;
   MapBufferRange glMapBufferRange_ = nullptr;
   UnmapBuffer glUnmapBuffer_ = nullptr;
   PixelStorei glPixelStorei_ = nullptr;
@@ -743,7 +758,8 @@ void SbsRenderer::stop() {
 }
 
 void SbsRenderer::loop() {
-  elevateRendererPriority();
+  // Create SDL/OpenGL/NVIDIA helper threads under SCHED_OTHER. Elevating before
+  // context creation caused driver worker threads to inherit realtime policy.
   const bool pboRequested = envEnabled("PULSAR_GL_PBO_UPLOAD");
   const StereoPairingMode pairingMode = stereoPairingModeFromEnvironment();
   std::cerr << "SBS Renderer: direct-rtx-single-target=1 vsync=" << (envEnabled("PULSAR_SBS_PRESENT_VSYNC", false) ? "on" : "off") << '\n';
@@ -827,6 +843,9 @@ void SbsRenderer::loop() {
     }
   }
   GlPboUploader* uploader = pboUploader.active() ? &pboUploader : nullptr;
+
+  // PULSAR_RENDERER_RT_AFTER_DRIVER_INIT_V1
+  elevateRendererPriority();
 
   std::array<TextureSlot, 2> textures{};
   TextureSlot composite{};

@@ -352,6 +352,9 @@ echo "$core_pid" >"$PULSAR_PID_FILE"
 
 wait_for_core || { tail -80 "$PULSAR_LOG_FILE" >&2; die "C++ core did not become ready."; }
 
+# PULSAR_RUNTIME_THREAD_TUNER_V1
+"$PULSAR_ROOT/core/scripts/tune-runtime-threads.sh" "$core_pid" >>"$PULSAR_LOG_FILE" 2>&1 &
+
 place_sbs_window
 
 browser="$(find_browser)" || die "No Chrome/Chromium browser was found. Run ./run.sh install-deps."
@@ -416,6 +419,7 @@ while true; do
     echo "$core_pid" >"$PULSAR_PID_FILE"
 
     if wait_for_core; then
+      "$PULSAR_ROOT/core/scripts/tune-runtime-threads.sh" "$core_pid" >>"$PULSAR_LOG_FILE" 2>&1 &
       place_sbs_window
       printf '%s\n' "Pulsar core-only restart completed; Xorg/UI remained active." >>"$PULSAR_LOG_FILE"
       continue
