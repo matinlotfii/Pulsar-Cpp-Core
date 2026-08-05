@@ -240,6 +240,55 @@ std::pair<uint32_t, uint32_t> fitOutputSize(
       std::max<uint32_t>(1, static_cast<uint32_t>(height * scale))};
 }
 
+// PULSAR_LOW_CPU_UI_PREVIEW_NEAREST_V1
+// UI preview is intentionally cheap: preserve aspect ratio and use nearest
+// sampling. The full-resolution renderer and camera controls are untouched.
+void resizeRgbNearestInto(
+    const uint8_t* rgb,
+    uint32_t width,
+    uint32_t height,
+    uint32_t targetWidth,
+    uint32_t targetHeight,
+    std::vector<uint8_t>& out) {
+  if (rgb == nullptr || width == 0 || height == 0 ||
+      targetWidth == 0 || targetHeight == 0) {
+    out.clear();
+    return;
+  }
+
+  const size_t outputBytes =
+      static_cast<size_t>(targetWidth) * targetHeight * 3u;
+  out.resize(outputBytes);
+
+  if (targetWidth == width && targetHeight == height) {
+    std::copy(rgb, rgb + outputBytes, out.begin());
+    return;
+  }
+
+  for (uint32_t y = 0; y < targetHeight; ++y) {
+    const uint32_t sourceY = std::min<uint32_t>(
+        height - 1u,
+        static_cast<uint32_t>(
+            (static_cast<uint64_t>(y) * height) / targetHeight));
+    const uint8_t* sourceRow =
+        rgb + static_cast<size_t>(sourceY) * width * 3u;
+    uint8_t* targetRow =
+        out.data() + static_cast<size_t>(y) * targetWidth * 3u;
+
+    for (uint32_t x = 0; x < targetWidth; ++x) {
+      const uint32_t sourceX = std::min<uint32_t>(
+          width - 1u,
+          static_cast<uint32_t>(
+              (static_cast<uint64_t>(x) * width) / targetWidth));
+      const uint8_t* source = sourceRow + static_cast<size_t>(sourceX) * 3u;
+      uint8_t* target = targetRow + static_cast<size_t>(x) * 3u;
+      target[0] = source[0];
+      target[1] = source[1];
+      target[2] = source[2];
+    }
+  }
+}
+
 bool gpuPatternFor(
     uint64_t format,
     int64_t cameraFilter,
@@ -695,24 +744,39 @@ void CameraDevice::mockLoop() {
 }
 
 void CameraDevice::previewLoop() {
-  pthread_setname_np(pthread_self(), slot_ == 0 ? "pulsar-jpg-l" : "pulsar-jpg-r");
-  // JPEG preview is best-effort UI work. It must never compete at realtime
-  // priority with camera acquisition or the SBS renderer. Quality/FPS remain
-  // unchanged; only scheduler precedence is lowered.
-  ::setpriority(PRIO_PROCESS, 0, 5);
+  pthread_setname_np(
+      pthread_self(),
+      slot_ == 0 ? "pulsar-jpg-l" : "pulsar-jpg-r");
 
-  const auto interval = std::chrono::milliseconds(1000 / std::max(previewFps_, 1));
-  auto next = std::chrono::steady_clock::now();
+  // JPEG preview is best-effort UI work. Keep it away from acquisition and
+  // the SBS renderer. Linux nice is per-thread, so this does not slow cameras.
+  ::setpriority(
+      PRIO_PROCESS,
+      0,
+      envInt("PULSAR_PREVIEW_NICE", 15, 0, 19));
+
+  const uint32_t previewMaxWidth = static_cast<uint32_t>(
+      envInt("PULSAR_PREVIEW_MAX_WIDTH", 640, 160, 1920));
+  const uint32_t previewMaxHeight = static_cast<uint32_t>(
+      envInt("PULSAR_PREVIEW_MAX_HEIGHT", 480, 120, 1080));
+  const auto interval = std::chrono::microseconds(
+      1000000 / std::max(previewFps_, 1));
+  auto next = std::chrono::steady_clock::now() +
+              (slot_ == 0 ? std::chrono::microseconds(0) : interval / 2);
   uint64_t encodedId = 0;
 
   while (running_) {
     {
       std::unique_lock<std::mutex> lock(previewMutex_);
       previewCv_.wait(lock, [&] {
-        return !running_ || ((previewDemand_ == nullptr || previewDemand_()) && previewPending_ && previewPending_->id != encodedId);
+        return !running_ ||
+               ((previewDemand_ == nullptr || previewDemand_()) &&
+                previewPending_ && previewPending_->id != encodedId);
       });
     }
+
     if (!running_) break;
+
     if (previewDemand_ != nullptr && !previewDemand_()) {
       std::lock_guard<std::mutex> lock(previewMutex_);
       lastJpeg_.reset();
@@ -722,30 +786,56 @@ void CameraDevice::previewLoop() {
     std::this_thread::sleep_until(next);
     if (!running_) break;
 
+    // Read the newest frame after the FPS wait. Older pending frames are
+    // dropped instead of encoded, preventing a UI-preview backlog.
     std::shared_ptr<const Frame> frame;
     {
       std::lock_guard<std::mutex> lock(previewMutex_);
       frame = previewPending_;
     }
-    if (!frame || !frame->rgb || frame->rgb->empty()) continue;
+
+    if (!frame || !frame->rgb || frame->rgb->empty()) {
+      next = std::chrono::steady_clock::now() + interval;
+      continue;
+    }
 
     uint32_t jpegWidth = frame->width;
     uint32_t jpegHeight = frame->height;
     const uint8_t* jpegData = frame->rgb->data();
-    const double jpegScale = std::min({1.0, 960.0 / std::max<uint32_t>(1, frame->width),
-                                       540.0 / std::max<uint32_t>(1, frame->height)});
+    const double jpegScale = std::min({
+        1.0,
+        static_cast<double>(previewMaxWidth) /
+            std::max<uint32_t>(1, frame->width),
+        static_cast<double>(previewMaxHeight) /
+            std::max<uint32_t>(1, frame->height)});
+
     if (jpegScale < 0.999) {
-      jpegWidth = std::max<uint32_t>(1, static_cast<uint32_t>(std::lround(frame->width * jpegScale)));
-      jpegHeight = std::max<uint32_t>(1, static_cast<uint32_t>(std::lround(frame->height * jpegScale)));
-      resizeRgbBilinearInto(frame->rgb->data(), frame->width, frame->height, jpegWidth, jpegHeight, previewResized_);
+      jpegWidth = std::max<uint32_t>(
+          1,
+          static_cast<uint32_t>(
+              std::lround(frame->width * jpegScale)));
+      jpegHeight = std::max<uint32_t>(
+          1,
+          static_cast<uint32_t>(
+              std::lround(frame->height * jpegScale)));
+      resizeRgbNearestInto(
+          frame->rgb->data(),
+          frame->width,
+          frame->height,
+          jpegWidth,
+          jpegHeight,
+          previewResized_);
       jpegData = previewResized_.data();
     }
 
-    auto jpeg = std::make_shared<std::vector<uint8_t>>(encodeJpeg(jpegData, jpegWidth, jpegHeight, jpegQuality_));
+    auto jpeg = std::make_shared<std::vector<uint8_t>>(
+        encodeJpeg(jpegData, jpegWidth, jpegHeight, jpegQuality_));
+
     {
       std::lock_guard<std::mutex> lock(previewMutex_);
       lastJpeg_ = std::move(jpeg);
     }
+
     encodedId = frame->id;
     next = std::chrono::steady_clock::now() + interval;
   }
