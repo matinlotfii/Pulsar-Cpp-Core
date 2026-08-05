@@ -482,7 +482,7 @@ run_remote_pulsar() {
   # automatically enabled here, because every controlled ./run.sh must create
   # a GitHub checkpoint before files are sent to the Pulsar device.
   "$ROOT/core/scripts/dev-sync.sh" --once
-  log "Pulsar synced and started on ${SYNC_REMOTE_USER}@${SYNC_REMOTE_HOST}:${SYNC_REMOTE_DIR}"
+  log "Pulsar synced and health-verified on ${SYNC_REMOTE_USER}@${SYNC_REMOTE_HOST}:${SYNC_REMOTE_DIR}"
 }
 
 list_local_backups() {

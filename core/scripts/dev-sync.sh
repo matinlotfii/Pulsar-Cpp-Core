@@ -71,15 +71,42 @@ build_ui_if_needed() {
 
 run_remote_apply() {
   local remote_script=""
-  printf -v remote_script 'cd %q' "$SYNC_REMOTE_DIR"
+  local service_q root_q user_q
+  printf -v service_q '%q' "$SYNC_REMOTE_SERVICE"
+  printf -v root_q '%q' "$SYNC_REMOTE_DIR"
+  printf -v user_q '%q' "$SYNC_REMOTE_USER"
+
+  printf -v remote_script 'set -Eeuo pipefail; cd %q' "$SYNC_REMOTE_DIR"
+  remote_script+="; chmod +x ./run.sh ./core/scripts/*.sh"
+
   if [[ "${SYNC_REMOTE_BUILD_ON_SYNC:-1}" == "1" ]]; then
-    remote_script+=" && PULSAR_USE_PREBUILT_UI=1 ./run.sh build"
+    remote_script+="; PULSAR_USE_PREBUILT_UI=1 ./run.sh build"
+    remote_script+="; LD_LIBRARY_PATH=${root_q}/camera/vendor/galaxy/lib:\${LD_LIBRARY_PATH:-} ldd ./core/build/pulsar-core | tee /tmp/pulsar-ldd.txt"
+    remote_script+="; if grep -q 'not found' /tmp/pulsar-ldd.txt; then echo 'ERROR: pulsar-core has missing runtime libraries.' >&2; exit 1; fi"
   fi
+
   if [[ "${SYNC_REMOTE_RESTART_ON_SYNC:-1}" == "1" ]]; then
-    printf -v remote_script '%s && sudo -n systemctl restart %q' "$remote_script" "$SYNC_REMOTE_SERVICE"
+    # Refresh the generated unit every deploy. The unit contains absolute paths,
+    # so merely restarting an older unit can launch a stale project directory.
+    remote_script+="; sudo -n env PULSAR_RUN_USER=${user_q} ${root_q}/core/scripts/install-service.sh --refresh"
+    remote_script+="; sudo -n systemctl reset-failed ${service_q} || true"
+    remote_script+="; sudo -n systemctl restart ${service_q}"
+    remote_script+="; ready=0"
+    remote_script+="; for _ in \$(seq 1 240); do if systemctl is-active --quiet ${service_q} && curl -fsS --max-time 1 http://127.0.0.1:4173/health >/dev/null 2>&1; then ready=1; break; fi; sleep 0.5; done"
+    remote_script+="; if [[ \$ready != 1 ]]; then"
+    remote_script+=" echo 'ERROR: Pulsar service restarted but did not become healthy.' >&2"
+    remote_script+="; echo '===== systemctl status =====' >&2; sudo -n systemctl --no-pager --full status ${service_q} >&2 || true"
+    remote_script+="; echo '===== unit definition =====' >&2; sudo -n systemctl cat ${service_q} >&2 || true"
+    remote_script+="; echo '===== recent journal =====' >&2; sudo -n journalctl -u ${service_q} -b --no-pager -n 180 >&2 || true"
+    remote_script+="; echo '===== Pulsar log =====' >&2; tail -n 180 ${root_q}/core/data/pulsar.log >&2 || true"
+    remote_script+="; echo '===== browser log =====' >&2; tail -n 80 ${root_q}/core/data/browser.log >&2 || true"
+    remote_script+="; echo '===== processes/port =====' >&2; ps -ef | grep -E '[X]org|[p]ulsar-core|[c]hrome|[c]hromium' >&2 || true; ss -ltnp | grep ':4173' >&2 || true"
+    remote_script+="; exit 1; fi"
+    remote_script+="; echo 'Pulsar health: OK'; curl -fsS http://127.0.0.1:4173/health; echo"
   fi
+
   ssh "${SSH_OPTS[@]}" "$REMOTE" "bash -lc $(printf '%q' "$remote_script")"
-  log "Applied remote build/restart on $REMOTE"
+  log "Applied and verified remote build/restart on $REMOTE"
 }
 
 snapshot_tree() {
