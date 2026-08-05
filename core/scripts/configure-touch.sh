@@ -56,8 +56,17 @@ reload_display_env || exit 0
 [[ -n "${PULSAR_SETTINGS_OUTPUT:-}" ]] || exit 0
 
 touch_controller_in_bootloader() {
-  command -v lsusb >/dev/null 2>&1 || return 1
-  lsusb | grep -Eiq "[[:space:]]${bootloader_ids_regex}[[:space:]]"
+  # PULSAR_FAST_SYSFS_TOUCH_DETECT_V3
+  local dev vendor product
+  for dev in /sys/bus/usb/devices/*; do
+    [[ -r "$dev/idVendor" && -r "$dev/idProduct" ]] || continue
+    vendor="$(<"$dev/idVendor")"
+    product="$(<"$dev/idProduct")"
+    if [[ "${vendor,,}:${product,,}" == "4348:55e0" ]]; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 find_touch_devices() {

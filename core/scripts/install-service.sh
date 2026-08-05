@@ -38,6 +38,7 @@ TTYVTDisallocate=yes
 WantedBy=multi-user.target
 UNIT
 
+# PULSAR_BOUNDED_TOUCH_UNIT_V3
 cat >"$touch_unit" <<UNIT
 [Unit]
 Description=Pulsar touchscreen hotplug remapper
@@ -47,6 +48,9 @@ After=pulsar-kiosk.service
 Type=oneshot
 Environment=PULSAR_ROOT=$PULSAR_ROOT
 ExecStart=$PULSAR_ROOT/core/scripts/touch-hotplug-event.sh
+TimeoutStartSec=8
+Nice=10
+IOSchedulingClass=idle
 UNIT
 
 mkdir -p "$dropin_dir"
@@ -77,10 +81,10 @@ systemctl enable pulsar-kiosk.service
 # Touch rules and HID modules must also be refreshed during normal deploys.
 modprobe usbhid 2>/dev/null || true
 modprobe hid_multitouch 2>/dev/null || true
+# PULSAR_SAFE_TOUCH_REFRESH_V3
 udevadm control --reload-rules || true
-udevadm trigger --subsystem-match=usb || true
-udevadm trigger --subsystem-match=input || true
-systemctl start pulsar-touch-hotplug.service || true
+udevadm trigger --subsystem-match=input --action=add || true
+timeout 8 systemctl start pulsar-touch-hotplug.service || true
 
 if ((refresh_only == 0)); then
   "$PULSAR_ROOT/core/scripts/configure-network-boot.sh" || true
