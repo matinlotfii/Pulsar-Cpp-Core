@@ -58,6 +58,14 @@ apply_if_changed() {
   ) 9>"$LOCK_FILE"
 }
 
+# PULSAR_INITIAL_DISPLAY_REAPPLY_V1
+# Apply the display topology once after Xorg, Chrome and NVIDIA-G0 are ready.
+# Otherwise a late DP connector can become the watcher baseline without
+# receiving a CRTC, mode or position.
+if nice -n 18 ionice -c3 "$PULSAR_ROOT/core/scripts/configure-displays.sh" >>"$PULSAR_LOG_FILE" 2>&1; then
+  printf '%s\n'     "Pulsar display hotplug: initial settled topology applied."     >>"$PULSAR_LOG_FILE"
+fi
+
 initial="$(signature || true)"
 [[ -n "$initial" ]] && printf '%s' "$initial" >"$LAST_FILE"
 
