@@ -17,14 +17,6 @@ bool GpuBayerPipeline::stageInput(
   return false;
 }
 
-bool GpuBayerPipeline::stageInputDirectToDevice(
-    const uint8_t*,
-    std::size_t,
-    std::string& error) {
-  error = "CUDA support was not compiled into this build";
-  return false;
-}
-
 bool GpuBayerPipeline::processStaged(
     uint32_t,
     uint32_t,

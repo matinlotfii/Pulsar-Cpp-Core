@@ -82,10 +82,6 @@ bool getInt(GX_PORT_HANDLE port, const char* node, GX_INT_VALUE& value) {
   return available(port, node) && GXGetIntValue(port, node, &value) == GX_STATUS_SUCCESS;
 }
 
-bool getFloat(GX_PORT_HANDLE port, const char* node, GX_FLOAT_VALUE& value) {
-  return available(port, node) && GXGetFloatValue(port, node, &value) == GX_STATUS_SUCCESS;
-}
-
 std::string getString(GX_DEV_HANDLE device, const char* node) {
   GX_STRING_VALUE value{};
   return GXGetStringValue(device, node, &value) == GX_STATUS_SUCCESS ? value.strCurValue : std::string{};
@@ -210,57 +206,6 @@ void applyLowLatencyAcquisitionSetup(GX_DEV_HANDLE device, int targetFps) {
   setEnum(device, "TriggerMode", "Off");
   setAcquisitionFrameRateEnabled(device, true);
   setFloat(device, "AcquisitionFrameRate", static_cast<double>(std::max(targetFps, 1)));
-}
-
-
-bool applyLowLatencySensorGeometry(
-    GX_DEV_HANDLE device,
-    int requestedScale,
-    uint32_t fallbackWidth,
-    uint32_t fallbackHeight,
-    int& configuredScale) {
-  if (!envEnabled("PULSAR_CAMERA_HARDWARE_ROI", true)) return false;
-
-  const int scale = envInt(
-      "PULSAR_CAMERA_SENSOR_SCALE", std::clamp(requestedScale, 1, 4), 1, 4);
-  const int roiWidth = envInt(
-      "PULSAR_CAMERA_ROI_WIDTH", static_cast<int>(fallbackWidth), 320, 8192);
-  const int roiHeight = envInt(
-      "PULSAR_CAMERA_ROI_HEIGHT", static_cast<int>(fallbackHeight), 240, 8192);
-
-  // Preserve the imported exposure, gain, white balance, gamma and LUT. Only
-  // sensor geometry changes here. Average binning keeps nearly the full
-  // horizontal field of view, improves signal/noise, and cuts USB/GPU work.
-  setEnumOneOf(device, "BinningHorizontalMode", {"Average", "Sum"});
-  setEnumOneOf(device, "BinningVerticalMode", {"Average", "Sum"});
-  const bool binH = setInt(device, "BinningHorizontal", scale);
-  const bool binV = setInt(device, "BinningVertical", scale);
-  setInt(device, "DecimationHorizontal", 1);
-  setInt(device, "DecimationVertical", 1);
-  setInt(device, "SensorDecimationHorizontal", 1);
-  setInt(device, "SensorDecimationVertical", 1);
-
-  // Width/height must be set before centered offsets on GenICam cameras.
-  setBool(device, "CenterX", false);
-  setBool(device, "CenterY", false);
-  setInt(device, "OffsetX", 0);
-  setInt(device, "OffsetY", 0);
-  const bool widthSet = setInt(device, "Width", roiWidth);
-  const bool heightSet = setInt(device, "Height", roiHeight);
-
-  // Prefer camera-provided centering. If unsupported, center using the current
-  // offset ranges, which already account for the selected width/height.
-  if (!setBool(device, "CenterX", true)) {
-    GX_INT_VALUE offset{};
-    if (getInt(device, "OffsetX", offset)) setInt(device, "OffsetX", offset.nMax / 2);
-  }
-  if (!setBool(device, "CenterY", true)) {
-    GX_INT_VALUE offset{};
-    if (getInt(device, "OffsetY", offset)) setInt(device, "OffsetY", offset.nMax / 2);
-  }
-
-  configuredScale = (binH && binV) ? scale : 1;
-  return widthSet && heightSet;
 }
 
 std::string lowerAscii(std::string value) {
@@ -512,26 +457,10 @@ void CameraDevice::loop() {
           gpuRequested_ && !gpuDisabledAfterFailure_ &&
           gpuPipeline_ != nullptr && bayer8(newest->nPixelFormat);
 
-      bool staged = false;
-      if (canStageGpu) {
-        const auto* sdkPixels =
-            static_cast<const uint8_t*>(newest->pImgBuf);
-        const auto sdkBytes =
-            static_cast<std::size_t>(newest->nImgSize);
-
-        if (envEnabled("PULSAR_GPU_DIRECT_SDK_H2D", true)) {
-          staged = gpuPipeline_->stageInputDirectToDevice(
-              sdkPixels, sdkBytes, gpuStageError);
-        }
-        if (!staged) {
-          // Safe runtime fallback: retain the original pinned-host staging path
-          // when direct H2D is disabled or unsupported by the CUDA driver.
-          staged = gpuPipeline_->stageInput(
-              sdkPixels, sdkBytes, gpuStageError);
-        }
-      }
-
-      if (staged) {
+      if (canStageGpu && gpuPipeline_->stageInput(
+                             static_cast<const uint8_t*>(newest->pImgBuf),
+                             static_cast<std::size_t>(newest->nImgSize),
+                             gpuStageError)) {
         copiedFrame.pImgBuf = nullptr;
         gpuInputStaged = true;
         havePrivateFrame = true;
@@ -539,7 +468,7 @@ void CameraDevice::loop() {
         if (canStageGpu) {
           gpuDisabledAfterFailure_ = true;
           std::cerr << label_
-                    << ": GPU input staging failed; CPU fallback active: "
+                    << ": GPU pinned-input staging failed; CPU fallback active: "
                     << gpuStageError << '\n';
         }
 
@@ -906,30 +835,6 @@ bool CameraDevice::connect() {
             << " sensor-scale=" << configuredSensorScale_
             << " render-max=" << maxWidth_ << "x" << maxHeight_ << '\n';
 
-  GX_INT_VALUE actualThroughput{};
-  GX_FLOAT_VALUE actualFrameRate{};
-  GX_FLOAT_VALUE actualExposure{};
-  const bool haveThroughput =
-      getInt(device_, "DeviceLinkThroughputLimit", actualThroughput);
-  const bool haveFrameRate =
-      getFloat(device_, "AcquisitionFrameRate", actualFrameRate);
-  const bool haveExposure =
-      getFloat(device_, "ExposureTime", actualExposure);
-  const char* syncModeRaw = std::getenv("PULSAR_CAMERA_SYNC_MODE");
-  const std::string syncMode =
-      syncModeRaw == nullptr || *syncModeRaw == '\0'
-          ? std::string{"software-start"}
-          : std::string{syncModeRaw};
-  std::cerr << label_ << ": maxfps-readback"
-            << " link-throughput-bps="
-            << (haveThroughput ? std::to_string(actualThroughput.nCurValue) : std::string{"?"})
-            << " acquisition-fps="
-            << (haveFrameRate ? std::to_string(actualFrameRate.dCurValue) : std::string{"?"})
-            << " exposure-us="
-            << (haveExposure ? std::to_string(actualExposure.dCurValue) : std::string{"?"})
-            << " sync-mode=" << syncMode
-            << '\n';
-
   if (gpuRequested_) {
     if (!GpuBayerPipeline::compiledWithCuda()) {
       gpuDisabledAfterFailure_ = true;
@@ -996,32 +901,65 @@ bool CameraDevice::configure() {
     }
   }
 
-  // The GalaxyView profile remains authoritative for exposure, gain, light,
-  // white balance, gamma and LUT. Acquisition timing and sensor geometry are
-  // then optimized independently for the 1920x1080 low-latency path.
+  // PULSAR_REFERENCE_PROFILE_AUTHORITY_V2
+  // The imported GalaxyView file owns all sensor and image parameters.
+  // Runtime controls are allowed only when no profile was imported.
   if (!profileImported_) {
     if (setEnumOneOf(device_, "UserSetSelector", {"Default", "UserSet0"})) {
       setCommand(device_, "UserSetLoad");
     }
-  }
+    applyLowLatencyAcquisitionSetup(device_, targetFps_);
 
-  applyLowLatencyAcquisitionSetup(device_, targetFps_);
-  setEnumOneOf(device_, "RegionSelector", {"Region0", "Region1"});
-  setEnum(device_, "RegionMode", "Off");
+    setEnumOneOf(device_, "RegionSelector", {"Region0", "Region1"});
+    setEnum(device_, "RegionMode", "Off");
 
-  const bool geometryApplied = applyLowLatencySensorGeometry(
-      device_, sensorScale_, maxWidth_, maxHeight_, configuredSensorScale_);
-  if (!geometryApplied) {
-    std::cerr << label_
-              << ": warning: hardware ROI/binning unavailable; profile geometry retained\n";
-  }
+    GX_INT_VALUE sensorWidthMax{};
+    GX_INT_VALUE sensorHeightMax{};
+    const bool haveSensorWidth = getInt(device_, "WidthMax", sensorWidthMax);
+    const bool haveSensorHeight = getInt(device_, "HeightMax", sensorHeightMax);
+    int sensorScale = std::clamp(sensorScale_, 1, 4);
 
-  if (!profileImported_) {
+    if (haveSensorWidth && haveSensorHeight) {
+      const double widthRatio =
+          static_cast<double>(sensorWidthMax.nCurValue) / std::max(1u, maxWidth_);
+      const double heightRatio =
+          static_cast<double>(sensorHeightMax.nCurValue) / std::max(1u, maxHeight_);
+      const int recommendedScale = std::clamp(
+          static_cast<int>(std::ceil(std::max({1.0, widthRatio, heightRatio}))),
+          1,
+          4);
+      sensorScale = std::max(sensorScale, recommendedScale);
+    }
+
+    configuredSensorScale_ = sensorScale;
+    setEnumOneOf(device_, "BinningHorizontalMode", {"Average", "Sum"});
+    setEnumOneOf(device_, "BinningVerticalMode", {"Average", "Sum"});
+    setInt(device_, "BinningHorizontal", sensorScale);
+    setInt(device_, "BinningVertical", sensorScale);
+    setInt(device_, "DecimationHorizontal", 1);
+    setInt(device_, "DecimationVertical", 1);
+    setInt(device_, "SensorDecimationHorizontal", 1);
+    setInt(device_, "SensorDecimationVertical", 1);
+    setBool(device_, "CenterX", false);
+    setBool(device_, "CenterY", false);
+
+    GX_INT_VALUE widthMax{};
+    GX_INT_VALUE heightMax{};
+
+    if (getInt(device_, "WidthMax", widthMax)) {
+      setInt(device_, "Width", widthMax.nCurValue);
+    }
+    if (getInt(device_, "HeightMax", heightMax)) {
+      setInt(device_, "Height", heightMax.nCurValue);
+    }
+
+    setInt(device_, "OffsetX", 0);
+    setInt(device_, "OffsetY", 0);
     applyControls(controls_(), true);
   }
 
-  // Keep transport/buffer latency optimizations outside profile authority.
-  // Exposure, gain, color, gamma and LUT remain owned by the known-good profile.
+  // Keep only host-side latency optimizations outside profile authority.
+  // These do not alter exposure, gain, color, LUT, ROI or sensor geometry.
   GX_DS_HANDLE streamHandle = nullptr;
   const bool haveStreamHandle =
       GXGetDataStreamHandleFromDev(device_, 0, &streamHandle) ==
@@ -1032,23 +970,11 @@ bool CameraDevice::configure() {
       ? static_cast<GX_PORT_HANDLE>(streamHandle)
       : static_cast<GX_PORT_HANDLE>(device_);
 
-  // Max-rate full-sensor transport. The profile carries the same values, but
-  // applying them here after import prevents an older local profile or camera
-  // user set from silently retaining the 350 MB/s limit that caps 12 MP Bayer
-  // capture near 25-28 fps.
-  const int linkThroughputBps = envInt(
-      "PULSAR_CAMERA_LINK_THROUGHPUT_BPS", 395000000, 100000000, 500000000);
-  const int streamTransferSize = envInt(
-      "PULSAR_STREAM_TRANSFER_SIZE", 1024 * 1024, 64 * 1024, 4 * 1024 * 1024);
-  const int streamTransferUrb = envInt(
-      "PULSAR_STREAM_TRANSFER_URB", 200, 8, 512);
-
-  if (!setEnumOneOf(device_, "DeviceLinkThroughputLimitMode", {"On"})) {
-    setBool(device_, "DeviceLinkThroughputLimitMode", true);
-  }
-  setInt(device_, "DeviceLinkThroughputLimit", linkThroughputBps);
-  setInt(streamPort, "StreamTransferSize", streamTransferSize);
-  setInt(streamPort, "StreamTransferNumberUrb", streamTransferUrb);
+  // PULSAR_REFERENCE_USB_TRANSPORT_V4
+  // Match the known-good ZIP transport for full 4024x3036 Bayer frames.
+  // These are host/USB stream parameters and do not alter image pixels.
+  setInt(streamPort, "StreamTransferSize", 1024 * 1024);
+  setInt(streamPort, "StreamTransferNumberUrb", 200);
   setInt(streamPort, "AcquisitionBufferCachePrec", 40);
   setBool(device_, "FrameStoreCoverActive", true);
   setEnum(device_, "CoverFrameStoreMode", "On");
@@ -1062,8 +988,7 @@ bool CameraDevice::configure() {
     streamBufferMode = "OldestFirstOverwrite";
   }
 
-  const uint64_t kAcquisitionBufferCount = static_cast<uint64_t>(
-      envInt("PULSAR_ACQUISITION_BUFFER_COUNT", 2, 2, 8));
+  constexpr uint64_t kAcquisitionBufferCount = 2;
 
   if (GXSetAcqusitionBufferNumber(device_, kAcquisitionBufferCount) !=
       GX_STATUS_SUCCESS) {
@@ -1073,10 +998,7 @@ bool CameraDevice::configure() {
 
   std::cerr << label_ << ": low-latency stream-buffer-mode="
             << streamBufferMode << " acquisition-buffers="
-            << kAcquisitionBufferCount
-            << " link-throughput-requested-bps=" << linkThroughputBps
-            << " transfer-size=" << streamTransferSize
-            << " transfer-urb=" << streamTransferUrb << '\n';
+            << kAcquisitionBufferCount << '\n';
 
   colorFilter_ = GX_COLOR_FILTER_NONE;
 
@@ -1264,25 +1186,7 @@ void CameraDevice::publish(
     resizeRgbBilinearInto(rgb, width, height, outWidth, outHeight, resized_);
     data = resized_.data();
   }
-  const std::size_t outputBytes =
-      static_cast<std::size_t>(outWidth) * static_cast<std::size_t>(outHeight) * 3u;
-  std::shared_ptr<std::vector<uint8_t>> rgbCopy;
-  for (std::size_t attempt = 0; attempt < rgbFramePool_.size(); ++attempt) {
-    const std::size_t index =
-        (rgbFramePoolCursor_ + attempt) % rgbFramePool_.size();
-    auto& candidate = rgbFramePool_[index];
-    if (!candidate) candidate = std::make_shared<std::vector<uint8_t>>();
-    if (candidate.use_count() == 1) {
-      candidate->resize(outputBytes);
-      std::memcpy(candidate->data(), data, outputBytes);
-      rgbCopy = candidate;
-      rgbFramePoolCursor_ = (index + 1u) % rgbFramePool_.size();
-      break;
-    }
-  }
-  if (!rgbCopy) {
-    rgbCopy = std::make_shared<std::vector<uint8_t>>(data, data + outputBytes);
-  }
+  auto rgbCopy = std::make_shared<std::vector<uint8_t>>(data, data + static_cast<size_t>(outWidth) * outHeight * 3u);
   std::shared_ptr<const std::vector<uint8_t>> currentJpeg;
   {
     std::lock_guard<std::mutex> lock(previewMutex_);

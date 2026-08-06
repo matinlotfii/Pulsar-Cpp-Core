@@ -26,8 +26,6 @@ const char* SDL_GetDisplayName(int displayIndex);
 int SDL_GetDisplayBounds(int displayIndex, SDL_Rect* rect);
 SDL_Window* SDL_CreateWindow(const char* title, int x, int y, int w, int h, uint32_t flags);
 int SDL_SetWindowFullscreen(SDL_Window* window, uint32_t flags);
-void SDL_SetWindowPosition(SDL_Window* window, int x, int y);
-void SDL_SetWindowSize(SDL_Window* window, int w, int h);
 void SDL_DestroyWindow(SDL_Window* window);
 SDL_Renderer* SDL_CreateRenderer(SDL_Window* window, int index, uint32_t flags);
 void SDL_DestroyRenderer(SDL_Renderer* renderer);

@@ -81,9 +81,9 @@ run_remote_apply() {
     script+='; if [[ "$cameras_ok" != 1 ]]; then echo "ERROR: both cameras did not become online" >&2; printf "%s\n" "$cameras_json" >&2; journalctl -u pulsar-kiosk.service -n 200 --no-pager >&2 || true; exit 1; fi'
     script+='; echo "Pulsar health:"; curl -fsS http://127.0.0.1:4173/health; echo'
     script+='; echo "Pulsar cameras:"; printf "%s\n" "$cameras_json"'
-    script+='; echo "Pulsar max-FPS / sync path:"'
-    script+='; tail -n 700 ./core/data/pulsar.log 2>/dev/null | grep -aE "maxfps-readback|low-latency stream-buffer-mode=|GPU pipeline ready|direct-rtx-single-target=|stereo-pairing-mode=|software-start-sync=|latency-stats" | tail -n 50 || true'
-    script+='; ./core/scripts/verify-maxfps-softsync.sh || true'
+    script+='; echo "Pulsar pinned-staging low-latency path:"'
+    script+='; tail -n 700 ./core/data/pulsar.log 2>/dev/null | grep -aE "low-latency stream-buffer-mode=|GPU pipeline ready|stereo-pairing-mode=|software-start-sync=|latency-stats" | tail -n 50 || true'
+    script+='; ./core/scripts/verify-ultra-low-latency.sh'
   fi
 
   ssh "${SSH_OPTS[@]}" "$REMOTE" "bash -lc $(printf '%q' "$script")"
