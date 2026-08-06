@@ -12,6 +12,17 @@ if [[ -x /usr/local/cuda-13.2/bin/nvcc ]]; then
 fi
 
 require_cuda="${PULSAR_REQUIRE_CUDA:-0}"
+clean_build="${PULSAR_CLEAN_BUILD:-0}"
+
+# Remote deployments use a clean build deliberately. rsync preserves source
+# timestamps and the remote build directory is not synchronized; without this,
+# an older CUDA object can survive and cause undefined-reference linker errors
+# after the C++ caller or CUDA interface changes.
+if [[ "$clean_build" == "1" && -d "$PULSAR_BUILD_DIR" ]]; then
+  log "Removing the previous build tree for a deterministic CUDA rebuild."
+  rm -rf "$PULSAR_BUILD_DIR"
+fi
+
 if [[ "$require_cuda" == "1" && ( -z "${CUDACXX:-}" || ! -x "$CUDACXX" ) ]]; then
   die "CUDA Toolkit 13.2/NVCC was not found at /usr/local/cuda-13.2/bin/nvcc."
 fi

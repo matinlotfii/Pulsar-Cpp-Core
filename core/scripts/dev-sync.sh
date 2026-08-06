@@ -61,7 +61,7 @@ run_remote_apply() {
     if [[ "${SYNC_REMOTE_BUILD_UI_ON_SYNC:-1}" == "1" ]]; then
       script+='; PULSAR_USE_PREBUILT_UI=1 ./core/scripts/build-ui.sh'
     fi
-    script+='; PULSAR_REQUIRE_CUDA=1 ./core/scripts/build-cpp.sh'
+    script+='; PULSAR_CLEAN_BUILD=1 PULSAR_REQUIRE_CUDA=1 ./core/scripts/build-cpp.sh'
     script+="; LD_LIBRARY_PATH=${root_q}/camera/vendor/galaxy/lib:\${LD_LIBRARY_PATH:-} ldd ./core/build/pulsar-core > /tmp/pulsar-ldd.txt"
     script+="; if grep -q 'not found' /tmp/pulsar-ldd.txt; then cat /tmp/pulsar-ldd.txt >&2; exit 1; fi"
   fi
