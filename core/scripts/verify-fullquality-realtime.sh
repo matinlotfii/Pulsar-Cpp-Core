@@ -184,7 +184,7 @@ script_text=configure_script.read_text(errors='replace') if configure_script.exi
 routing=root/'core/data/display-routing.env'
 display_script_ok=all(t in script_text for t in ('previous_role','PULSAR_ROLE_UI_OUTPUT','PULSAR_VIEWER_PANEL_SPECS'))
 routing_ok=routing.exists() and 'PULSAR_ROLE_UI_OUTPUT=' in routing.read_text(errors='replace')
-preview_config_ok=all(t in config for t in ('PULSAR_PREVIEW_FPS=12','PULSAR_PREVIEW_MAX_WIDTH=640','PULSAR_PREVIEW_MAX_HEIGHT=360','PULSAR_JPEG_QUALITY=50'))
+preview_config_ok=all(t in config for t in ('PULSAR_PREVIEW_FPS=10','PULSAR_PREVIEW_MAX_WIDTH=512','PULSAR_PREVIEW_MAX_HEIGHT=288','PULSAR_JPEG_QUALITY=42'))
 
 checks=[]
 def check(name,ok,detail): checks.append((name,bool(ok),detail))
@@ -200,7 +200,7 @@ check('CUDA_H2D',metrics['left_h2d'] is not None and metrics['right_h2d'] is not
 check('PUBLISH_COPY',metrics['left_publish'] is not None and metrics['right_publish'] is not None and max(metrics['left_publish'],metrics['right_publish'])<=4.0,f'left_ms={fmt(metrics["left_publish"])} right_ms={fmt(metrics["right_publish"])}')
 check('TEXTURE_UPLOAD',metrics['upload'] is not None and metrics['upload']<=6.0,f'median_ms={fmt(metrics["upload"])}')
 check('PRESENT',metrics['present'] is not None and metrics['present']<=3.0,f'median_ms={fmt(metrics["present"])}')
-check('UI_PREVIEW_CONFIG',preview_config_ok,'640x360, 12 fps, JPEG quality 50')
+check('UI_PREVIEW_CONFIG',preview_config_ok,'512x288, 10 fps, JPEG quality 42')
 check('UI_LATEST_ONLY_ENDPOINTS',preview_ok[0]>=3 and preview_ok[1]>=3,f'left_responses={preview_ok[0]} right_responses={preview_ok[1]} left_request_ms={fmt(median(preview[0]))} right_request_ms={fmt(median(preview[1]))}')
 check('UI_PREVIEW_WORKER', (root/'ui/frontend/src/app/cameraFrameWorker.ts').exists() and 'latest-only live camera preview' in (root/'ui/frontend/src/app/camera-stream.tsx').read_text(errors='replace'),'worker decode + canvas + long poll')
 check('DISPLAY_SETTINGS_SCRIPT',display_script_ok,f'path={configure_script}')

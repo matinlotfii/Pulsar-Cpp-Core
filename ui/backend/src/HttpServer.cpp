@@ -1820,6 +1820,35 @@ void HttpServer::handleClient(int fd) {
     return;
   }
 
+  if (request->method == "POST" && request->path == "/api/telemetry/ui") {
+    const auto metric = [&](const char* key) {
+      return jsonNumber(request->body, key).value_or(0.0);
+    };
+    std::cerr << "UI Runtime: perf-stats"
+              << " window-ms=" << metric("windowMs")
+              << " raf-fps=" << metric("rafFps")
+              << " raf-misses=" << metric("rafMisses")
+              << " raf-gap-max-ms=" << metric("rafGapMaxMs")
+              << " long-tasks=" << metric("longTasks")
+              << " long-task-ms=" << metric("longTaskMs")
+              << " state-api-ms=" << metric("stateApiMs")
+              << " left-samples=" << metric("leftSamples")
+              << " left-request-ms=" << metric("leftRequestMs")
+              << " left-source-age-ms=" << metric("leftSourceAgeMs")
+              << " left-decode-ms=" << metric("leftDecodeMs")
+              << " left-draw-ms=" << metric("leftDrawMs")
+              << " left-dropped=" << metric("leftDropped")
+              << " right-samples=" << metric("rightSamples")
+              << " right-request-ms=" << metric("rightRequestMs")
+              << " right-source-age-ms=" << metric("rightSourceAgeMs")
+              << " right-decode-ms=" << metric("rightDecodeMs")
+              << " right-draw-ms=" << metric("rightDrawMs")
+              << " right-dropped=" << metric("rightDropped")
+              << '\n';
+    textResponse(fd, "200 OK", "application/json; charset=utf-8", "{\"ok\":true}");
+    return;
+  }
+
   if (request->method == "POST" && request->path == "/api/display") {
     auto display = state_.display();
     const auto outputId = jsonString(request->body, "outputId");

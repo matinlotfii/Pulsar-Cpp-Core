@@ -480,6 +480,20 @@ for variable in PULSAR_PREFERRED_AR_OUTPUT PULSAR_PREFERRED_AR2_OUTPUT; do
   fi
 done
 
+# Some USB-C/DP adapters expose an XREAL panel with an empty or generic EDID.
+# After the normal monitor has been selected, optionally use the remaining RTX
+# DisplayPort connectors as glasses. This never steals the UI or main monitor.
+case "${PULSAR_ASSUME_REMAINING_DP_GLASSES:-1}" in
+  1|true|yes|on)
+    for candidate in "${rtx_connected[@]}"; do
+      ((${#glasses[@]}>=2)) && break
+      [[ "$candidate" =~ ^DP-[0-9]+-[0-9]+$ ]] || continue
+      [[ "$candidate" != "$settings" && "$candidate" != "$display" ]] || continue
+      append_unique glasses "$candidate"
+    done
+    ;;
+esac
+
 ar1="${glasses[0]:-}"
 ar2="${glasses[1]:-}"
 

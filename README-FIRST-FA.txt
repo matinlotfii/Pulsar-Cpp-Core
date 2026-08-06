@@ -1,24 +1,23 @@
-نسخه Pulsar Full-Sensor Realtime V3
+Pulsar Observable Realtime V9
+=============================
 
-اجرا روی کامپیوتر شخصی:
-  chmod +x run.sh
+هدف این بسته:
+- کیفیت کامل سنسور 4024x3036 برای مسیر اصلی دوربین
+- خروجی مستقل و هم‌زمان برای مانیتور و عینک‌ها با یک Viewer چندپنله
+- Preview سبک 512x288 / 10fps فقط برای UI
+- انیمیشن‌های UI فعال با افکت‌های compositor-friendly
+- پاک‌سازی کامل پروژه و تنظیمات قبلی در هر ./run.sh
+- لاگ زنده و خلاصه‌ی خودکار گلوگاه روی کامپیوتر شخصی
+
+اجرا:
+  chmod +x run.sh core/scripts/*.sh
   ./run.sh
 
-رفتار ./run.sh:
-  1) هیچ Build محلی انجام نمی‌دهد.
-  2) تغییرات را Commit و به GitHub Push می‌کند.
-  3) سورس را به matin@192.168.1.123:/home/matin/Pulsar-Cpp-Core می‌فرستد.
-  4) روی کامپیوتر پروژه Build تمیز CUDA 13.2 انجام می‌دهد.
-  5) pulsar-kiosk.service را Restart می‌کند.
-  6) Health و آنلاین بودن هر دو دوربین را بررسی می‌کند.
+آخرین گزارش روی کامپیوتر شخصی:
+  cat diagnostics/live/latest/SUMMARY.txt
 
-پروفایل تصویر:
-  سنسور کامل 4024x3036 / BayerRG8 / Exposure=30000 / Gain=0
-  خروجی CUDA برای نمایشگر و عینک: حداکثر 1920x1080
+لاگ کامل همان اجرا:
+  tail -f diagnostics/live/latest/deploy.log
 
-این تفاوت مهم است: ابعاد 1920x1080 کیفیت دریافت سنسور را کم نمی‌کند؛
-Debayer و Resize بعد از دریافت کامل سنسور روی RTX 3080 انجام می‌شود تا انتقال D2H
-و Upload یک RGB کامل 36MB باعث تأخیر نشود.
-
-برای بررسی بعد از اجرا:
-  ssh matin@192.168.1.123 'cd /home/matin/Pulsar-Cpp-Core && DISPLAY=:0 ./core/scripts/realtime-20s-diagnose.sh 20'
+راهنمای فنی:
+  OBSERVABLE_REALTIME_V9_FA.md

@@ -10,6 +10,7 @@ unclutter_pid=""
 display_watch_pid=""
 audio_watch_pid=""
 touch_watch_pid=""
+log_watch_pid=""
 touch_log_file="$PULSAR_DATA_DIR/touch.log"
 session_shell_pid_file="$PULSAR_DATA_DIR/session-shell.pid"
 browser_pid_file="$PULSAR_DATA_DIR/browser.pid"
@@ -23,7 +24,7 @@ place_sbs_window() {
 cleanup() {
   current_display_watch="$(cat "$PULSAR_DATA_DIR/display-hotplug.pid" 2>/dev/null || true)"
   current_browser_pid="$(cat "$browser_pid_file" 2>/dev/null || true)"
-  kill "$touch_watch_pid" "$audio_watch_pid" "$display_watch_pid" \
+  kill "$log_watch_pid" "$touch_watch_pid" "$audio_watch_pid" "$display_watch_pid" \
        "$current_display_watch" "$current_browser_pid" "$browser_pid" \
        "$core_pid" "$openbox_pid" "$unclutter_pid" 2>/dev/null || true
   rm -f "$PULSAR_PID_FILE" "$PULSAR_DATA_DIR/display-hotplug.pid"
@@ -143,14 +144,14 @@ reconfigure_display_topology() {
 
   if [[ "$current_aux_signature" != "$previous_aux_signature" ]]; then
     printf '%s\n' \
-      "Pulsar display hotplug: aux outputs changed from ${previous_aux_outputs:-none} to ${PULSAR_AUX_OUTPUTS:-${PULSAR_AR_OUTPUT:-none}}; applying live layout update." \
+      "Pulsar display hotplug: aux outputs changed from ${previous_aux_outputs:-none} to ${PULSAR_AUX_OUTPUTS:-${PULSAR_AR_OUTPUT:-none}}; restarting the viewer so panel geometry is rebuilt." \
       >>"$PULSAR_LOG_FILE"
-  else
-    printf '%s\n' \
-      "Pulsar display hotplug: layout refreshed in place." \
-      >>"$PULSAR_LOG_FILE"
+    return 2
   fi
 
+  printf '%s\n' \
+    "Pulsar display hotplug: layout refreshed in place." \
+    >>"$PULSAR_LOG_FILE"
   place_sbs_window
   return 0
 }
@@ -349,6 +350,8 @@ fi
 nohup "${core_command[@]}" >>"$PULSAR_LOG_FILE" 2>&1 &
 core_pid=$!
 echo "$core_pid" >"$PULSAR_PID_FILE"
+"$PULSAR_ROOT/core/scripts/bounded-log-watch.sh" "$core_pid" >/dev/null 2>&1 &
+log_watch_pid=$!
 
 wait_for_core || { tail -80 "$PULSAR_LOG_FILE" >&2; die "C++ core did not become ready."; }
 
@@ -409,6 +412,9 @@ while true; do
     nohup "${core_command[@]}" >>"$PULSAR_LOG_FILE" 2>&1 &
     core_pid=$!
     echo "$core_pid" >"$PULSAR_PID_FILE"
+    kill "$log_watch_pid" 2>/dev/null || true
+    "$PULSAR_ROOT/core/scripts/bounded-log-watch.sh" "$core_pid" >/dev/null 2>&1 &
+    log_watch_pid=$!
 
     if wait_for_core; then
       place_sbs_window

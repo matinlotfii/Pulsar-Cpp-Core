@@ -2,9 +2,39 @@
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
+command="${1:-start}"
+
+# Every command is recorded on the workstation. The live trace is bounded and
+# old runs are rotated so diagnostics cannot grow without limit.
+RUN_LOCAL_LOG_ROOT="${RUN_LOCAL_LOG_ROOT:-$ROOT/diagnostics/live}"
+RUN_LOCAL_LOG_KEEP="${RUN_LOCAL_LOG_KEEP:-8}"
+RUN_LOCAL_LOG_MAX_MB="${RUN_LOCAL_LOG_MAX_MB:-250}"
+RUN_LOCAL_TIMESTAMP="$(date '+%Y%m%d-%H%M%S')"
+RUN_LOCAL_DIR="$RUN_LOCAL_LOG_ROOT/run-$RUN_LOCAL_TIMESTAMP"
+mkdir -p "$RUN_LOCAL_DIR"
+ln -sfn "run-$RUN_LOCAL_TIMESTAMP" "$RUN_LOCAL_LOG_ROOT/latest"
+
+mapfile -t _old_local_runs < <(
+  find "$RUN_LOCAL_LOG_ROOT" -mindepth 1 -maxdepth 1 -type d -name 'run-*' -printf '%f\n' 2>/dev/null |
+    LC_ALL=C sort -r |
+    tail -n "+$((RUN_LOCAL_LOG_KEEP + 1))"
+)
+for _old_run in "${_old_local_runs[@]:-}"; do
+  [[ -n "$_old_run" ]] && rm -rf -- "$RUN_LOCAL_LOG_ROOT/$_old_run"
+done
+while :; do
+  _local_megabytes="$(du -sm "$RUN_LOCAL_LOG_ROOT" 2>/dev/null | awk '{print $1+0}')"
+  (( _local_megabytes <= RUN_LOCAL_LOG_MAX_MB )) && break
+  _oldest="$(find "$RUN_LOCAL_LOG_ROOT" -mindepth 1 -maxdepth 1 -type d -name 'run-*' -printf '%f\n' 2>/dev/null | LC_ALL=C sort | head -n1)"
+  [[ -n "$_oldest" && "$RUN_LOCAL_LOG_ROOT/$_oldest" != "$RUN_LOCAL_DIR" ]] || break
+  rm -rf -- "$RUN_LOCAL_LOG_ROOT/$_oldest"
+done
+
+exec > >(stdbuf -oL -eL tee -a "$RUN_LOCAL_DIR/deploy.log") 2>&1
+
 source "$ROOT/core/scripts/common.sh"
 load_config
-command="${1:-start}"
+printf 'PULSAR LOCAL RUN LOG: %s\n' "$RUN_LOCAL_DIR"
 
 # Personal workstation -> GitHub -> project computer. No local CUDA/C++ build
 # occurs for the default start/run command.
@@ -20,7 +50,7 @@ RUN_GIT_SSH_COMMAND="${RUN_GIT_SSH_COMMAND:-ssh -p 443 -o HostName=ssh.github.co
 RUN_GIT_BACKUP_DIR="${RUN_GIT_BACKUP_DIR:-$HOME/Downloads/Pulsar-Git-Backups}"
 RUN_GIT_TAG_PREFIX="${RUN_GIT_TAG_PREFIX:-pulsar-run}"
 RUN_GIT_MAX_FILE_MB="${RUN_GIT_MAX_FILE_MB:-95}"
-RUN_GIT_COMMIT_MESSAGE="${RUN_GIT_COMMIT_MESSAGE:-Pulsar full-quality realtime UI-isolated deployment V8}"
+RUN_GIT_COMMIT_MESSAGE="${RUN_GIT_COMMIT_MESSAGE:-Pulsar observable realtime UI motion and multi-output viewer V9}"
 RUN_GIT_PROMPT="${RUN_GIT_PROMPT:-0}"
 RUN_REQUIRE_CUDA="${RUN_REQUIRE_CUDA:-1}"
 # Destructive clean-replace deployment: stop the old kiosk/UI, remove the old
@@ -40,6 +70,7 @@ on_error() {
   echo "Line: $line" >&2
   echo "Command: $failed" >&2
   echo "No local application was started. Existing Git backups remain safe." >&2
+  echo "Local diagnostic log: ${RUN_LOCAL_DIR:-unavailable}/deploy.log" >&2
   echo "If failure occurred after REMOTE CLEAN REPLACE, the old remote runtime was intentionally removed." >&2
   echo "============================================================" >&2
   exit "$code"
@@ -380,7 +411,7 @@ REMOTE
 collect_remote_diagnostics() {
   load_sync_config
   local remote="${SYNC_REMOTE_USER}@${SYNC_REMOTE_HOST}"
-  local local_dir="$ROOT/diagnostics"
+  local local_dir="$RUN_LOCAL_DIR/systemwide"
   mkdir -p "$local_dir"
 
   echo
@@ -413,6 +444,35 @@ deploy_remote() {
   log "Remote build, camera verification and service restart completed."
 }
 
+stream_remote_runtime() {
+  load_sync_config
+  local remote="${SYNC_REMOTE_USER}@${SYNC_REMOTE_HOST}"
+  local seconds="${RUN_LIVE_TRACE_SECONDS:-${PULSAR_LIVE_TRACE_SECONDS:-60}}"
+  local live_log="$RUN_LOCAL_DIR/runtime-live.log"
+  local summary_log="$RUN_LOCAL_DIR/SUMMARY.txt"
+
+  echo
+  echo "========== LIVE END-TO-END TRACE =========="
+  log "Streaming bounded low-overhead runtime telemetry to: $live_log"
+  set +e
+  ssh -F /dev/null -p "$SYNC_REMOTE_PORT" \
+    -o BatchMode=yes -o ConnectTimeout=20 \
+    -o StrictHostKeyChecking=accept-new \
+    "$remote" \
+    "cd $(printf '%q' "$SYNC_REMOTE_DIR") && ./core/scripts/live-runtime-monitor.sh $(printf '%q' "$seconds")" \
+    | stdbuf -oL -eL tee "$live_log"
+  local ssh_status=${PIPESTATUS[0]}
+  set -e
+  if ((ssh_status != 0)); then
+    warn "Live runtime monitor exited with status $ssh_status; retained partial log."
+  fi
+
+  python3 "$ROOT/core/scripts/summarize-live-log.py" "$live_log" \
+    >"$summary_log" 2>&1 || true
+  cat "$summary_log"
+  log "Live summary saved locally: $summary_log"
+}
+
 setup_remote_sudo() {
   load_sync_config
   local remote="${SYNC_REMOTE_USER}@${SYNC_REMOTE_HOST}"
@@ -437,7 +497,14 @@ case "$command" in
     checkpoint_and_push
     purge_remote_previous_deployment
     deploy_remote
+    stream_remote_runtime
     collect_remote_diagnostics
+    echo
+    echo "========== LOCAL DIAGNOSTICS READY =========="
+    echo "Deploy log:  $RUN_LOCAL_DIR/deploy.log"
+    echo "Live log:    $RUN_LOCAL_DIR/runtime-live.log"
+    echo "Summary:     $RUN_LOCAL_DIR/SUMMARY.txt"
+    echo "Latest link: $RUN_LOCAL_LOG_ROOT/latest"
     ;;
   setup-remote)
     setup_remote_sudo

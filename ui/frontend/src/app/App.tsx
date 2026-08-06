@@ -22,6 +22,7 @@ import {
   type StereoAutoAlignState
 } from "./model";
 import { WifiSheet } from "./wifi-sheet";
+import { recordStateApiLatency } from "./runtime-telemetry";
 
 interface BackendStatePayload {
   cameras?: Array<{
@@ -163,12 +164,15 @@ function AppRoot() {
 
   useEffect(() => {
     const loadBackendState = async () => {
+      const requestStartedAt = performance.now();
       try {
         const response = await fetch("/api/state", { cache: "no-store" });
         const payload = await response.json().catch(() => null);
+        recordStateApiLatency(performance.now() - requestStartedAt);
         if (!response.ok || !isBackendStatePayload(payload)) return;
         applyBackendState(payload);
       } catch {
+        recordStateApiLatency(performance.now() - requestStartedAt);
       }
     };
     void loadBackendState();

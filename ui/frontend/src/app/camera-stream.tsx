@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { StereoAutoAlignState, StereoAutoAlignTrigger, StereoMode } from "./model";
+import { recordPreviewTelemetry } from "./runtime-telemetry";
 
 export const defaultStereoAutoAlign: StereoAutoAlignState = {
   enabled: false,
@@ -55,16 +56,25 @@ export function stereoAutoAlignTriggerParam(trigger: StereoAutoAlignTrigger) {
 
 export async function requestStereoAutoAlign(query = "") {
   const response = await fetch(`${cameraServiceBaseUrl()}/api/stereo/auto-align${query}`, { cache: "no-store" });
-  if (!response.ok) {
-    throw new Error("Stereo auto alignment unavailable.");
-  }
+  if (!response.ok) throw new Error("Stereo auto alignment unavailable.");
   return { ...defaultStereoAutoAlign, ...await response.json() } as StereoAutoAlignState;
 }
 
 type CameraStreamStatus = "connecting" | "live" | "offline";
 type WorkerFrameMessage =
-  | { type: "bitmap"; bitmap: ImageBitmap; sequence: number }
+  | {
+      type: "bitmap";
+      bitmap: ImageBitmap;
+      sequence: number;
+      decodeMs: number;
+      droppedFrames: number;
+      requestMs: number;
+      sourceAgeMs: number;
+      bytes: number;
+    }
   | { type: "error" };
+
+type PendingBitmap = Extract<WorkerFrameMessage, { type: "bitmap" }>;
 
 function CameraLiveView({
   cameraIndex,
@@ -86,40 +96,99 @@ function CameraLiveView({
     let consecutiveFailures = 0;
     let previousFrameId = 0;
     let controller: AbortController | null = null;
+    let context: CanvasRenderingContext2D | null = null;
+    let pendingBitmap: PendingBitmap | null = null;
+    let drawRequest = 0;
+    let localDropped = 0;
+    let status: CameraStreamStatus = "connecting";
+    let frameVisible = false;
     const worker = new Worker(new URL("./cameraFrameWorker.ts", import.meta.url), { type: "module" });
 
-    worker.onmessage = (event: MessageEvent<WorkerFrameMessage>) => {
-      if (stopped) return;
-      if (event.data.type === "error") {
-        setStreamStatus("offline");
-        return;
-      }
-      const bitmap = event.data.bitmap;
-      const canvas = canvasRef.current;
-      const context = canvas?.getContext("2d", { alpha: false, desynchronized: true });
-      if (canvas && context) {
-        const targetWidth = Math.max(1, Math.round(canvas.clientWidth || bitmap.width));
-        const targetHeight = Math.max(1, Math.round(canvas.clientHeight || bitmap.height));
-        if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
-          canvas.width = targetWidth;
-          canvas.height = targetHeight;
-        }
-        const scale = Math.max(targetWidth / bitmap.width, targetHeight / bitmap.height);
-        const sourceWidth = targetWidth / scale;
-        const sourceHeight = targetHeight / scale;
-        const sourceX = (bitmap.width - sourceWidth) * 0.5;
-        const sourceY = (bitmap.height - sourceHeight) * 0.5;
-        context.drawImage(bitmap, sourceX, sourceY, sourceWidth, sourceHeight,
-                          0, 0, targetWidth, targetHeight);
-        setHasLiveFrame(true);
-        setStreamStatus("live");
-      }
-      bitmap.close();
+    const updateStatus = (next: CameraStreamStatus) => {
+      if (status === next || stopped) return;
+      status = next;
+      setStreamStatus(next);
     };
 
-    worker.onerror = () => {
-      if (!stopped) setStreamStatus("offline");
+    const markFrameVisible = () => {
+      if (frameVisible || stopped) return;
+      frameVisible = true;
+      setHasLiveFrame(true);
     };
+
+    const drawLatest = () => {
+      drawRequest = 0;
+      const frame = pendingBitmap;
+      pendingBitmap = null;
+      if (!frame || stopped) {
+        frame?.bitmap.close();
+        return;
+      }
+
+      const canvas = canvasRef.current;
+      if (!canvas) {
+        frame.bitmap.close();
+        return;
+      }
+      context ??= canvas.getContext("2d", { alpha: false, desynchronized: true });
+      if (!context) {
+        frame.bitmap.close();
+        return;
+      }
+
+      const drawStartedAt = performance.now();
+      const targetWidth = Math.max(1, Math.round(canvas.clientWidth || frame.bitmap.width));
+      const targetHeight = Math.max(1, Math.round(canvas.clientHeight || frame.bitmap.height));
+      if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+      }
+
+      const scale = Math.max(targetWidth / frame.bitmap.width, targetHeight / frame.bitmap.height);
+      const sourceWidth = targetWidth / scale;
+      const sourceHeight = targetHeight / scale;
+      const sourceX = (frame.bitmap.width - sourceWidth) * 0.5;
+      const sourceY = (frame.bitmap.height - sourceHeight) * 0.5;
+      context.drawImage(frame.bitmap, sourceX, sourceY, sourceWidth, sourceHeight,
+                        0, 0, targetWidth, targetHeight);
+      const drawMs = performance.now() - drawStartedAt;
+      frame.bitmap.close();
+
+      markFrameVisible();
+      updateStatus("live");
+      recordPreviewTelemetry(cameraIndex, {
+        requestMs: frame.requestMs,
+        sourceAgeMs: frame.sourceAgeMs,
+        decodeMs: frame.decodeMs,
+        drawMs,
+        bytes: frame.bytes,
+        dropped: frame.droppedFrames + localDropped
+      });
+      localDropped = 0;
+
+      if (pendingBitmap && drawRequest === 0) {
+        drawRequest = window.requestAnimationFrame(drawLatest);
+      }
+    };
+
+    worker.onmessage = (event: MessageEvent<WorkerFrameMessage>) => {
+      if (stopped) {
+        if (event.data.type === "bitmap") event.data.bitmap.close();
+        return;
+      }
+      if (event.data.type === "error") {
+        updateStatus("offline");
+        return;
+      }
+      if (pendingBitmap) {
+        pendingBitmap.bitmap.close();
+        localDropped += 1;
+      }
+      pendingBitmap = event.data;
+      if (drawRequest === 0) drawRequest = window.requestAnimationFrame(drawLatest);
+    };
+
+    worker.onerror = () => updateStatus("offline");
 
     const sleep = (milliseconds: number) =>
       new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
@@ -127,6 +196,7 @@ function CameraLiveView({
     const receiveLatestFrames = async () => {
       while (!stopped) {
         controller = new AbortController();
+        const requestStartedAt = performance.now();
         try {
           const response = await fetch(cameraLatestFrameUrl(cameraIndex, previousFrameId), {
             cache: "no-store",
@@ -135,17 +205,26 @@ function CameraLiveView({
           });
           if (!response.ok) throw new Error(`camera preview HTTP ${response.status}`);
           const frameId = Number(response.headers.get("X-Pulsar-Frame-Id") ?? "0");
+          const sourceAgeMs = Number(response.headers.get("X-Pulsar-Source-Age-Ms") ?? "0");
           const buffer = await response.arrayBuffer();
+          const requestMs = performance.now() - requestStartedAt;
           if (stopped) break;
           if (buffer.byteLength > 0 && frameId !== previousFrameId) {
             previousFrameId = frameId;
-            worker.postMessage({ type: "frame", buffer }, [buffer]);
+            worker.postMessage({
+              type: "frame",
+              buffer,
+              requestMs,
+              sourceAgeMs: Number.isFinite(sourceAgeMs) ? sourceAgeMs : 0,
+              bytes: buffer.byteLength
+            }, [buffer]);
           }
           consecutiveFailures = 0;
+          if (!frameVisible) updateStatus("connecting");
         } catch (error) {
           if (stopped || (error instanceof DOMException && error.name === "AbortError")) break;
           consecutiveFailures += 1;
-          setStreamStatus(consecutiveFailures >= 3 ? "offline" : "connecting");
+          updateStatus(consecutiveFailures >= 3 ? "offline" : "connecting");
           await sleep(Math.min(800, 120 * consecutiveFailures));
         }
       }
@@ -156,6 +235,8 @@ function CameraLiveView({
       stopped = true;
       controller?.abort();
       worker.terminate();
+      if (drawRequest !== 0) window.cancelAnimationFrame(drawRequest);
+      pendingBitmap?.bitmap.close();
     };
   }, [cameraIndex]);
 
@@ -212,7 +293,5 @@ export function MedicalView({
       <CameraLiveView cameraIndex={0} label="Left Camera" alignOffset={resolvedAlignOffset} />
       <CameraLiveView cameraIndex={1} label="Right Camera" alignOffset={resolvedAlignOffset} />
     </div>
-  ) : (
-    tissue
-  );
+  ) : tissue;
 }

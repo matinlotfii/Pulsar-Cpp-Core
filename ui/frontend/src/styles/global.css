@@ -9066,24 +9066,22 @@ html.pulsar-remote-ui textarea {
 
 
 
-/* PULSAR_REALTIME_UI_V8
- * The native SDL/CUDA display remains the medical-quality path. The browser is
- * only a control surface and low-resolution preview, so remove decorative GPU
- * work that can compete with camera acquisition or make touch feel sluggish. */
-html.pulsar-realtime-ui *,
-html.pulsar-realtime-ui *::before,
-html.pulsar-realtime-ui *::after {
-  animation-duration: 0.001ms !important;
-  animation-iteration-count: 1 !important;
-  transition-duration: 0.001ms !important;
-  scroll-behavior: auto !important;
+/* PULSAR_OBSERVABLE_REALTIME_UI_V9
+ * Animations remain enabled, but the kiosk avoids effects that trigger a
+ * full-screen blur/repaint. Motion is limited to compositor-friendly opacity
+ * and transform work so camera preview and touch interaction stay responsive. */
+html.pulsar-realtime-ui {
+  --pulsar-motion-fast: 120ms;
+  --pulsar-motion-normal: 190ms;
+  scroll-behavior: auto;
 }
 
 html.pulsar-realtime-ui .camera-live-image,
 html.pulsar-realtime-ui .camera-mjpeg-fallback {
   filter: none !important;
-  transition: none !important;
-  will-change: auto !important;
+  transition: transform var(--pulsar-motion-normal) ease,
+              opacity var(--pulsar-motion-fast) ease !important;
+  will-change: transform, opacity;
   image-rendering: auto;
 }
 
@@ -9093,11 +9091,75 @@ html.pulsar-realtime-ui .stereo-layout {
   contain: layout paint style;
 }
 
+html.pulsar-realtime-ui .page-transition,
+html.pulsar-realtime-ui .viewport-frame,
+html.pulsar-realtime-ui .home-launch-button,
+html.pulsar-realtime-ui .home-float-button,
+html.pulsar-realtime-ui .home-device-stage .device-tower,
+html.pulsar-realtime-ui .device-aura,
+html.pulsar-realtime-ui .device-orbit,
+html.pulsar-realtime-ui .home-pulsar-core::before,
+html.pulsar-realtime-ui .home-brand-lines span,
+html.pulsar-realtime-ui .home-brand-scan,
+html.pulsar-realtime-ui .home-core-rings span,
+html.pulsar-realtime-ui .pulse-dot,
+html.pulsar-realtime-ui .pulsar-mark::before {
+  backface-visibility: hidden;
+  transform: translateZ(0);
+  will-change: transform, opacity;
+}
+
+/* Do not animate shadow/blur values; those repaint large surfaces. Buttons and
+ * pages still animate via transform, opacity, color and border color. */
+html.pulsar-realtime-ui button,
+html.pulsar-realtime-ui [role="button"],
+html.pulsar-realtime-ui .control-tile,
+html.pulsar-realtime-ui .capability-button,
+html.pulsar-realtime-ui .home-launch-button,
+html.pulsar-realtime-ui .home-float-button {
+  transition-property: transform, opacity, color, background-color, border-color !important;
+  transition-duration: var(--pulsar-motion-fast) !important;
+}
+
 html.pulsar-realtime-ui [style*="backdrop-filter"],
 html.pulsar-realtime-ui .glass-card,
 html.pulsar-realtime-ui .liquid-glass,
 html.pulsar-realtime-ui .modal-panel,
-html.pulsar-realtime-ui .wifi-keyboard {
+html.pulsar-realtime-ui .wifi-keyboard,
+html.pulsar-realtime-ui .boot-panel {
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
+}
+
+/* This kiosk explicitly enables its light compositor-only motion profile even
+ * when a stale desktop accessibility setting advertises reduced motion. */
+html.pulsar-motion-enabled .viewport-frame {
+  animation: shell-enter 280ms cubic-bezier(0.2, 0.72, 0.22, 1) both !important;
+}
+html.pulsar-motion-enabled .page-transition {
+  animation: page-enter 190ms cubic-bezier(0.2, 0.72, 0.22, 1) both !important;
+}
+html.pulsar-motion-enabled .home-device-stage .device-tower {
+  animation: device-float 3.8s ease-in-out infinite !important;
+}
+html.pulsar-motion-enabled .device-aura {
+  animation: aura-breathe 3.6s ease-in-out infinite !important;
+}
+html.pulsar-motion-enabled .device-orbit {
+  animation: orbit-rotate 10s linear infinite !important;
+}
+html.pulsar-motion-enabled .pulse-dot {
+  animation: pulse-dot 1.8s ease-out infinite !important;
+}
+html.pulsar-motion-enabled .home-pulsar-core::before {
+  animation: home-core-breathe 5.2s ease-in-out infinite !important;
+}
+html.pulsar-motion-enabled .home-brand-lines span {
+  animation: home-line-drift 4.6s ease-in-out infinite !important;
+}
+html.pulsar-motion-enabled .home-brand-scan {
+  animation: home-scan-slide 5.8s ease-in-out infinite !important;
+}
+html.pulsar-motion-enabled .home-core-rings span {
+  animation: home-ring-drift 8s linear infinite !important;
 }

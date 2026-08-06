@@ -1,5 +1,3 @@
-Package: Pulsar-Cpp-Core-maxfps-softsync-v5-20260806
-Base: clean-replace V4
-Camera changes only: full sensor 4024x3036, 395 MB/s per camera, 32 FPS target, software parallel start sync, reusable RGB frame pool.
-UI source and ui/dist are unchanged from V4.
-Hardware validation occurs on 192.168.1.123 during ./run.sh.
+Pulsar Observable Realtime V9
+Generated from the user-provided V8 full-quality project on 2026-08-06.
+Main changes: selective UI motion, latest-only UI canvas pipeline, multi-output X11 viewer for monitor/glasses, browser/native telemetry, bounded workstation logs, automatic bottleneck summary, destructive clean replacement on every run.

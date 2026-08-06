@@ -81,8 +81,8 @@ run_remote_apply() {
     script+='; echo "Pulsar health:"; curl -fsS http://127.0.0.1:4173/health; echo'
     script+='; echo "Pulsar cameras:"; printf "%s\n" "$cameras_json"'
     script+='; echo "Pulsar full-quality realtime path:"'
-    script+='; tail -n 700 ./core/data/pulsar.log 2>/dev/null | grep -aE "low-latency stream-buffer-mode=|GPU pipeline ready|stereo-pairing-mode=|software-start-sync=|latency-stats|preview-stats|UI Snapshot: latest-stats" | tail -n 50 || true'
-    script+='; ./core/scripts/verify-fullquality-realtime.sh'
+    script+='; tail -n 700 ./core/data/pulsar.log 2>/dev/null | grep -aE "low-latency stream-buffer-mode=|GPU pipeline ready|stereo-pairing-mode=|software-start-sync=|latency-stats|preview-stats|UI Snapshot: latest-stats|UI Runtime: perf-stats|viewer-canvas=" | tail -n 50 || true'
+    script+='; ./core/scripts/verify-observable-realtime.sh'
   fi
 
   ssh "${SSH_OPTS[@]}" "$REMOTE" "bash -lc $(printf '%q' "$script")"
