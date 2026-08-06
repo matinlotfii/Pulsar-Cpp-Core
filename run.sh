@@ -23,6 +23,10 @@ RUN_GIT_MAX_FILE_MB="${RUN_GIT_MAX_FILE_MB:-95}"
 RUN_GIT_COMMIT_MESSAGE="${RUN_GIT_COMMIT_MESSAGE:-Pulsar low-latency remote deployment}"
 RUN_GIT_PROMPT="${RUN_GIT_PROMPT:-0}"
 RUN_REQUIRE_CUDA="${RUN_REQUIRE_CUDA:-1}"
+# Destructive clean-replace deployment: stop the old kiosk/UI, remove the old
+# remote project and its Pulsar-specific caches, then transfer this package.
+RUN_REMOTE_PURGE_FIRST="${RUN_REMOTE_PURGE_FIRST:-1}"
+RUN_REMOTE_PURGE_OLD_COPIES="${RUN_REMOTE_PURGE_OLD_COPIES:-1}"
 
 on_error() {
   local code=$?
@@ -36,6 +40,7 @@ on_error() {
   echo "Line: $line" >&2
   echo "Command: $failed" >&2
   echo "No local application was started. Existing Git backups remain safe." >&2
+  echo "If failure occurred after REMOTE CLEAN REPLACE, the old remote runtime was intentionally removed." >&2
   echo "============================================================" >&2
   exit "$code"
 }
@@ -227,6 +232,144 @@ checkpoint_and_push() {
   log "GitHub push complete: $branch @ ${commit:0:12} (tag $tag)"
 }
 
+purge_remote_previous_deployment() {
+  load_sync_config
+  [[ "$RUN_REMOTE_PURGE_FIRST" == "1" ]] || {
+    warn "Remote clean-replace disabled because RUN_REMOTE_PURGE_FIRST=$RUN_REMOTE_PURGE_FIRST"
+    return 0
+  }
+
+  local remote="${SYNC_REMOTE_USER}@${SYNC_REMOTE_HOST}"
+  local service="${SYNC_REMOTE_SERVICE:-pulsar-kiosk.service}"
+  local remote_command
+  printf -v remote_command 'bash -s -- %q %q %q %q' \
+    "$SYNC_REMOTE_DIR" \
+    "$SYNC_REMOTE_GIT_DIR" \
+    "$service" \
+    "$RUN_REMOTE_PURGE_OLD_COPIES"
+
+  echo
+  echo "========== REMOTE CLEAN REPLACE =========="
+  log "Stopping the old Pulsar runtime/UI and removing the previous remote deployment."
+
+  ssh -F /dev/null -p "$SYNC_REMOTE_PORT" \
+    -o BatchMode=yes -o ConnectTimeout=20 \
+    -o StrictHostKeyChecking=accept-new \
+    "$remote" "$remote_command" <<'REMOTE'
+set -Eeuo pipefail
+
+remote_dir="$1"
+remote_git_dir="$2"
+service="$3"
+purge_old_copies="$4"
+run_user="$(id -un)"
+run_uid="$(id -u)"
+remote_parent="$(dirname "$remote_dir")"
+remote_name="$(basename "$remote_dir")"
+remote_git_name="$(basename "$remote_git_dir")"
+
+# Destructive-operation guardrails. Refuse to run if environment variables were
+# accidentally set to a broad or unrelated path.
+[[ "$remote_dir" == /* && "$remote_dir" != "/" && "$remote_dir" != "$HOME" ]] || {
+  echo "ERROR: unsafe remote project path: $remote_dir" >&2
+  exit 1
+}
+[[ "$remote_name" == Pulsar-Cpp-Core* ]] || {
+  echo "ERROR: refusing to purge a directory not named Pulsar-Cpp-Core*: $remote_dir" >&2
+  exit 1
+}
+[[ "$remote_git_dir" == /* && "$remote_git_dir" != "/" && "$remote_git_dir" != "$HOME" ]] || {
+  echo "ERROR: unsafe remote Git path: $remote_git_dir" >&2
+  exit 1
+}
+[[ "$remote_git_name" == Pulsar-Cpp-Core.git ]] || {
+  echo "ERROR: refusing to purge unexpected Git mirror: $remote_git_dir" >&2
+  exit 1
+}
+
+printf '\n[REMOTE] Stopping old system service: %s\n' "$service"
+sudo -n /usr/bin/systemctl stop "$service" 2>/dev/null || true
+
+# Stop and remove an old continuous-sync user service so it cannot copy stale
+# files back into the freshly deployed directory.
+systemctl --user disable --now pulsar-dev-sync.service >/dev/null 2>&1 || true
+rm -f "$HOME/.config/systemd/user/pulsar-dev-sync.service"
+systemctl --user daemon-reload >/dev/null 2>&1 || true
+
+terminate_user_pattern() {
+  local signal="$1" pattern="$2"
+  pkill "-$signal" -u "$run_uid" -f -- "$pattern" 2>/dev/null || true
+}
+
+printf '[REMOTE] Terminating old Pulsar core, kiosk browser and helper processes.\n'
+for pattern in \
+  "$remote_dir/core/build/pulsar-core" \
+  "$remote_dir/core/scripts/start-session.sh" \
+  "$remote_dir/core/scripts/display-hotplug-watch.sh" \
+  "$remote_dir/core/scripts/configure-displays.sh" \
+  "$remote_dir/core/scripts/place-sbs-window.py" \
+  "--user-data-dir=$remote_dir/core/data/browser-profile"; do
+  terminate_user_pattern TERM "$pattern"
+done
+sleep 2
+for pattern in \
+  "$remote_dir/core/build/pulsar-core" \
+  "$remote_dir/core/scripts/start-session.sh" \
+  "$remote_dir/core/scripts/display-hotplug-watch.sh" \
+  "$remote_dir/core/scripts/configure-displays.sh" \
+  "$remote_dir/core/scripts/place-sbs-window.py" \
+  "--user-data-dir=$remote_dir/core/data/browser-profile"; do
+  terminate_user_pattern KILL "$pattern"
+done
+
+if systemctl is-active --quiet "$service" 2>/dev/null; then
+  echo "ERROR: old Pulsar service is still active; refusing to delete its files." >&2
+  systemctl --no-pager --full status "$service" >&2 || true
+  exit 1
+fi
+
+printf '[REMOTE] Removing previous project, build tree, UI data and project Git mirror.\n'
+rm -rf -- \
+  "$remote_dir" \
+  "${remote_dir}.new" \
+  "${remote_dir}.staging" \
+  "${remote_dir}.previous" \
+  "$remote_git_dir"
+
+if [[ "$purge_old_copies" == "1" && -d "$remote_parent" ]]; then
+  # These directories were created by earlier rollback/deployment attempts.
+  find "$remote_parent" -mindepth 1 -maxdepth 1 -type d \
+    \( -name "${remote_name}.before-*" \
+       -o -name "${remote_name}.old-*" \
+       -o -name "${remote_name}.backup-*" \
+       -o -name "${remote_name}.staging-*" \) \
+    -exec rm -rf -- {} + 2>/dev/null || true
+fi
+
+printf '[REMOTE] Removing Pulsar-specific user caches and temporary runtime data.\n'
+rm -rf -- \
+  "$HOME/.cache/pulsar" \
+  "$HOME/.cache/Pulsar" \
+  "$HOME/.config/pulsar" \
+  "$HOME/.local/state/pulsar" \
+  "$HOME/.local/share/pulsar" \
+  "$HOME/.dev-sync" \
+  "/tmp/pulsar-runtime-$run_user" 2>/dev/null || true
+
+# Remove only temporary Pulsar entries owned by this user; do not touch other
+# users' files or unrelated system caches.
+find /tmp -mindepth 1 -maxdepth 1 -uid "$run_uid" \
+  \( -name 'pulsar-*' -o -name '.pulsar-*' \) \
+  -exec rm -rf -- {} + 2>/dev/null || true
+
+mkdir -p "$remote_dir"
+chmod 0755 "$remote_dir"
+test -d "$remote_dir" -a -w "$remote_dir"
+
+printf '[REMOTE] Clean destination ready: %s\n' "$remote_dir"
+REMOTE
+}
+
 deploy_remote() {
   load_sync_config
   "$ROOT/core/scripts/dev-sync.sh" --once
@@ -255,10 +398,15 @@ case "$command" in
     log "This computer only commits, pushes and transfers source; CUDA build runs on pulsar."
     remote_preflight
     checkpoint_and_push
+    purge_remote_previous_deployment
     deploy_remote
     ;;
   setup-remote)
     setup_remote_sudo
+    ;;
+  purge-remote)
+    remote_preflight
+    purge_remote_previous_deployment
     ;;
   backup|checkpoint)
     checkpoint_and_push
@@ -295,8 +443,9 @@ case "$command" in
   *)
     cat <<'USAGE'
 Usage:
-  ./run.sh                 Commit/push, sync, remote CUDA build, restart, verify cameras
+  ./run.sh                 Commit/push, purge old remote runtime/project, sync, build, restart
   ./run.sh setup-remote    One-time limited sudo setup on the project computer
+  ./run.sh purge-remote    Stop/delete the previous remote project and Pulsar caches
   ./run.sh backup          Commit/push without deployment
   ./run.sh build           Build C++/CUDA on the current computer
   ./run.sh build-ui        Build UI on the current computer
