@@ -50,7 +50,7 @@ RUN_GIT_SSH_COMMAND="${RUN_GIT_SSH_COMMAND:-ssh -p 443 -o HostName=ssh.github.co
 RUN_GIT_BACKUP_DIR="${RUN_GIT_BACKUP_DIR:-$HOME/Downloads/Pulsar-Git-Backups}"
 RUN_GIT_TAG_PREFIX="${RUN_GIT_TAG_PREFIX:-pulsar-run}"
 RUN_GIT_MAX_FILE_MB="${RUN_GIT_MAX_FILE_MB:-95}"
-RUN_GIT_COMMIT_MESSAGE="${RUN_GIT_COMMIT_MESSAGE:-Pulsar overlapped camera pipeline and isolated realtime display V10}"
+RUN_GIT_COMMIT_MESSAGE="${RUN_GIT_COMMIT_MESSAGE:-Pulsar observable realtime UI motion and multi-output viewer V9}"
 RUN_GIT_PROMPT="${RUN_GIT_PROMPT:-0}"
 RUN_REQUIRE_CUDA="${RUN_REQUIRE_CUDA:-1}"
 # Destructive clean-replace deployment: stop the old kiosk/UI, remove the old
@@ -496,27 +496,15 @@ case "$command" in
     remote_preflight
     checkpoint_and_push
     purge_remote_previous_deployment
-    deploy_status=0
-    set +e
     deploy_remote
-    deploy_status=$?
-    set -e
-
-    # Always collect a bounded trace when the remote host is reachable. This
-    # preserves exact failure evidence instead of stopping before logs return.
-    stream_remote_runtime || true
-    collect_remote_diagnostics || true
+    stream_remote_runtime
+    collect_remote_diagnostics
     echo
     echo "========== LOCAL DIAGNOSTICS READY =========="
-    echo "Deploy status: $deploy_status"
-    echo "Deploy log:    $RUN_LOCAL_DIR/deploy.log"
-    echo "Live log:      $RUN_LOCAL_DIR/runtime-live.log"
-    echo "Summary:       $RUN_LOCAL_DIR/SUMMARY.txt"
-    echo "Latest link:   $RUN_LOCAL_LOG_ROOT/latest"
-    if ((deploy_status != 0)); then
-      echo "Deployment failed, but diagnostic collection was retained." >&2
-      exit "$deploy_status"
-    fi
+    echo "Deploy log:  $RUN_LOCAL_DIR/deploy.log"
+    echo "Live log:    $RUN_LOCAL_DIR/runtime-live.log"
+    echo "Summary:     $RUN_LOCAL_DIR/SUMMARY.txt"
+    echo "Latest link: $RUN_LOCAL_LOG_ROOT/latest"
     ;;
   setup-remote)
     setup_remote_sudo

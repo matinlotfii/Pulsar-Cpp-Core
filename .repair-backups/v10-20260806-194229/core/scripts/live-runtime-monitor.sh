@@ -31,7 +31,7 @@ prefix_file() {
   sed "s/^/[${prefix}] /" "$file"
 }
 
-printf '[TRACE] version=overlapped-realtime-v10 start=%s duration-sec=%s interval-sec=%s host=%s\n' \
+printf '[TRACE] version=observable-realtime-v9 start=%s duration-sec=%s interval-sec=%s host=%s\n' \
   "$(date --iso-8601=seconds)" "$DURATION" "$SAMPLE_INTERVAL" "$(hostname)"
 printf '[TRACE] service-active=%s service-enabled=%s\n' \
   "$(systemctl is-active "$SERVICE" 2>/dev/null || true)" \
@@ -50,12 +50,6 @@ if [[ "$main_pid" =~ ^[0-9]+$ ]] && ((main_pid > 0)); then
   pstree -ap "$main_pid" 2>/dev/null | sed 's/^/[PROCESS] /' || true
 fi
 printf '[PROCESS_TREE_END]\n'
-printf '[GRAPHICS_BEGIN]\n'
-DISPLAY="${DISPLAY:-:0}" xrandr --listproviders 2>&1 | sed 's/^/[XRANDR_PROVIDER] /' || true
-if command -v glxinfo >/dev/null 2>&1; then
-  DISPLAY="${DISPLAY:-:0}" glxinfo -B 2>&1 | sed 's/^/[GLX] /' || true
-fi
-printf '[GRAPHICS_END]\n'
 
 printf '[DISPLAY_PROBE_BEGIN]\n'
 DISPLAY="${DISPLAY:-:0}" "$PULSAR_ROOT/core/scripts/verify-viewer-panels.py" 2>&1 | sed 's/^/[DISPLAY_PROBE] /' || true
@@ -94,11 +88,8 @@ while (( $(date +%s) < end_epoch )); do
   timestamp="$(date --iso-8601=seconds)"
   core_pid="$(pgrep -n -x pulsar-core 2>/dev/null || true)"
   core_stats="missing"
-  thread_stats="missing"
   if [[ "$core_pid" =~ ^[0-9]+$ ]]; then
     core_stats="$(ps -p "$core_pid" -o pid=,psr=,ni=,pri=,pcpu=,pmem=,nlwp=,stat=,etime= 2>/dev/null | xargs || true)"
-    thread_stats="$(ps -L -p "$core_pid" -o tid=,psr=,pcpu=,stat=,comm= --sort=-pcpu 2>/dev/null | head -n 10 | tr '
-' ';' | sed 's/[[:space:]]\+/ /g' || true)"
   fi
 
   xorg_cpu="$(pgrep -n -x Xorg 2>/dev/null | xargs -r ps -o pcpu= -p 2>/dev/null | xargs || true)"
@@ -121,8 +112,8 @@ while (( $(date +%s) < end_epoch )); do
   loadavg="$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || true)"
   memory="$(awk '/MemTotal/{t=$2}/MemAvailable/{a=$2}END{if(t>0)printf "%.1f",100*(t-a)/t}' /proc/meminfo 2>/dev/null || true)"
 
-  printf '[SYSTEM] ts=%s core="%s" threads="%s" xorg-cpu=%s chrome-root-cpu=%s chrome-gpu-cpu=%s chrome-renderer-cpu=%s gpu="%s" api="%s" outputs="%s" load="%s" memory-used-pct=%s\n' \
-    "$timestamp" "$core_stats" "$thread_stats" "${xorg_cpu:-0}" "$chrome_root_cpu" "$chrome_gpu_cpu" \
+  printf '[SYSTEM] ts=%s core="%s" xorg-cpu=%s chrome-root-cpu=%s chrome-gpu-cpu=%s chrome-renderer-cpu=%s gpu="%s" api="%s" outputs="%s" load="%s" memory-used-pct=%s\n' \
+    "$timestamp" "$core_stats" "${xorg_cpu:-0}" "$chrome_root_cpu" "$chrome_gpu_cpu" \
     "$chrome_renderer_cpu" "$gpu" "$api" "$outputs" "$loadavg" "${memory:-0}"
   sleep "$SAMPLE_INTERVAL"
 done

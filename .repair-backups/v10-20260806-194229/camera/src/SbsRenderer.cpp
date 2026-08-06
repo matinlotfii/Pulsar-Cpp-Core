@@ -653,15 +653,10 @@ void SbsRenderer::loop() {
   elevateRendererPriority();
   const bool pboRequested = envEnabled("PULSAR_GL_PBO_UPLOAD");
   const StereoPairingMode pairingMode = stereoPairingModeFromEnvironment();
-  std::cerr << "SBS Renderer: multi-output-latest-only=1 nvidia-offload="
-            << (envEnabled("PULSAR_CORE_NVIDIA_OFFLOAD", false) ? "on" : "off")
-            << " vsync=" << (envEnabled("PULSAR_SBS_PRESENT_VSYNC", false) ? "on" : "off") << '\n';
+  std::cerr << "SBS Renderer: multi-output-latest-only=1 vsync=" << (envEnabled("PULSAR_SBS_PRESENT_VSYNC", false) ? "on" : "off") << '\n';
   std::cerr << "SBS Renderer: stereo-pairing-mode="
             << stereoPairingModeName(pairingMode) << '\n';
-  const std::string scaleQuality = envString("PULSAR_RENDER_SCALE_QUALITY", "1");
-  SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, scaleQuality.c_str());
-  SDL_SetHint("SDL_RENDER_BATCHING", "1");
-  SDL_SetHint("SDL_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR", "1");
+  SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
   if (pboRequested) SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
   if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) {
     std::cerr << "SDL video init failed: " << SDL_GetError() << '\n';

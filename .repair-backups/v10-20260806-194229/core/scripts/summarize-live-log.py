@@ -35,8 +35,6 @@ def camera_metrics(text: str, label: str) -> dict[str, float | None]:
         "acquired_fps": "acquired-fps",
         "dequeue_ms": "dequeue-wait-ms",
         "raw_ms": "raw-copy-ms",
-        "queue_ms": "queue-wait-ms",
-        "stage_ms": "stage-ms",
         "process_ms": "process-ms",
         "publish_ms": "publish-ms",
         "host_ms": "host-pipeline-ms",
@@ -72,9 +70,8 @@ def main() -> int:
         "loop_fps": "loop-fps", "left_age_ms": "left-host-age-ms",
         "right_age_ms": "right-host-age-ms", "skew_ms": "stereo-host-skew-ms",
         "upload_ms": "texture-upload-ms", "prepare_ms": "prepare-ms",
-        "render_ms": "render-ms", "render_max_ms": "render-max-ms",
-        "present_ms": "present-ms", "loop_total_ms": "loop-total-ms",
-        "loop_max_ms": "loop-total-max-ms", "panels": "panels",
+        "render_ms": "render-ms", "present_ms": "present-ms",
+        "loop_total_ms": "loop-total-ms", "panels": "panels",
     }
     renderer = {
         key: median(metric(text, "SBS Renderer: latency-stats", token))
@@ -128,12 +125,8 @@ def main() -> int:
         bottlenecks.append(("CAMERA_ACQUISITION",
                             f"Camera output is {min(fps_values):.2f} FPS; frames are not arriving fast enough."))
     for side, item in (("left", left), ("right", right)):
-        if item["raw_ms"] is not None and item["raw_ms"] > 12.0:
-            warnings.append(("RAW_COPY", f"{side} SDK copy={item['raw_ms']:.2f} ms; overlapped acquisition can tolerate it while queue wait stays low."))
-        if item["queue_ms"] is not None and item["queue_ms"] > 8.0:
-            bottlenecks.append(("CAMERA_QUEUE", f"{side} processing queue wait={item['queue_ms']:.2f} ms"))
-        if item["stage_ms"] is not None and item["stage_ms"] > 4.0:
-            bottlenecks.append(("PINNED_STAGE", f"{side} pageable-to-pinned stage={item['stage_ms']:.2f} ms"))
+        if item["raw_ms"] is not None and item["raw_ms"] > 3.0:
+            bottlenecks.append(("RAW_COPY", f"{side} raw staging copy={item['raw_ms']:.2f} ms"))
         if item["h2d_ms"] is not None and item["h2d_ms"] > 3.0:
             bottlenecks.append(("CUDA_H2D", f"{side} host-to-device={item['h2d_ms']:.2f} ms"))
         if item["process_ms"] is not None and item["process_ms"] > 5.0:
@@ -150,8 +143,6 @@ def main() -> int:
         bottlenecks.append(("TEXTURE_UPLOAD", f"Texture upload={renderer['upload_ms']:.2f} ms"))
     if renderer["render_ms"] is not None and renderer["render_ms"] > 10.0:
         bottlenecks.append(("RENDER_COPY", f"Panel rendering={renderer['render_ms']:.2f} ms"))
-    if renderer["render_max_ms"] is not None and renderer["render_max_ms"] > 80.0:
-        bottlenecks.append(("RENDER_STALL", f"Renderer maximum stall={renderer['render_max_ms']:.2f} ms"))
     if renderer["present_ms"] is not None and renderer["present_ms"] > 4.0:
         bottlenecks.append(("DISPLAY_PRESENT", f"Present={renderer['present_ms']:.2f} ms"))
 
@@ -180,14 +171,13 @@ def main() -> int:
     for name, reason in warnings:
         unique_warnings.setdefault(name, reason)
 
-    print("PULSAR OVERLAPPED REALTIME V10 — AUTOMATIC SUMMARY")
+    print("PULSAR OBSERVABLE REALTIME V9 — AUTOMATIC SUMMARY")
     print("=================================================")
     print(f"SOURCE_LOG={path.resolve()}")
     print()
     for label, item in (("LEFT_CAMERA", left), ("RIGHT_CAMERA", right)):
         print(f"{label}: output={fmt(item['output_fps'],' fps')} acquired={fmt(item['acquired_fps'],' fps')} "
               f"dequeue={fmt(item['dequeue_ms'],' ms')} raw={fmt(item['raw_ms'],' ms')} "
-              f"queue={fmt(item['queue_ms'],' ms')} stage={fmt(item['stage_ms'],' ms')} "
               f"process={fmt(item['process_ms'],' ms')} publish={fmt(item['publish_ms'],' ms')} "
               f"H2D={fmt(item['h2d_ms'],' ms')} debayer={fmt(item['debayer_ms'],' ms')} "
               f"resize={fmt(item['resize_ms'],' ms')} D2H={fmt(item['d2h_ms'],' ms')}")
