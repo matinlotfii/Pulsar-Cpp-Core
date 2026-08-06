@@ -1,14 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-# PULSAR_CUDA_PATH_BOOTSTRAP
-# Remote/non-interactive SSH shells may not load ~/.profile.
-if [[ -x /usr/local/cuda-13.2/bin/nvcc ]]; then
-  export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda-13.2}"
-  export CUDACXX="${CUDACXX:-$CUDA_HOME/bin/nvcc}"
-  export PATH="$CUDA_HOME/bin:$PATH"
-fi
-
 source "$(dirname "$0")/common.sh"
 load_config
 mkdir -p "$PULSAR_BUILD_DIR"
