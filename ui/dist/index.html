@@ -11,8 +11,19 @@
       content="Pulsar embedded exoscope monitor HMI"
     />
     <title>Pulsar HMI</title>
-    <script type="module" crossorigin src="./assets/index-CrGUzvWa.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-DxGUkmD3.css">
+  
+    <!-- Pulsar remote browser cursor -->
+    <script>
+      (() => {
+        const localHosts = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+        if (!localHosts.has(window.location.hostname)) {
+          document.documentElement.classList.add("pulsar-remote-ui");
+        }
+      })();
+    </script>
+
+    <script type="module" crossorigin src="./assets/index-D3nt5iP8.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-DcO6a5Qp.css">
   </head>
   <body>
     <div id="root"></div>

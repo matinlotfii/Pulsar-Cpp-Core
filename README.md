@@ -1,6 +1,6 @@
 # Pulsar C++ Core
 
-نسخه‌ی سبک پروژه برای اجرای مستقیم روی **Ubuntu Server** بدون GNOME. مسیر تصویر و Backend کاملاً C++ است؛ فقط یک helper کوچک Python برای جای‌گذاری پنجره X11 وجود دارد.
+نسخه‌ی تمیز و سبک پروژه برای اجرای مستقیم روی **Ubuntu Server** بدون GNOME و بدون هیچ سرویس Python.
 
 ## ساختار پروژه
 
@@ -21,18 +21,15 @@ chmod +x run.sh
 ./run.sh
 ```
 
-در اجرای اصلی، `run.sh` ابتدا UI و C++ را build و smoke-test می‌کند. سپس commit/tag/backup را می‌سازد، تغییرات را روی GitHub push می‌کند و پروژه را روی `192.168.1.123` sync، build و restart می‌کند. اگر CUDA Toolkit پیدا نشود، اجرای اصلی متوقف می‌شود تا نسخه‌ی CPU با تأخیر بیشتر ناخواسته deploy نشود.
+در اجرای اول، `run.sh` بسته‌های لازم را نصب، C++ را با حالت Release کامپایل و سرویس kiosk را راه‌اندازی می‌کند. برنامه هیچ رمز، صفحه‌ی ورود یا احراز هویت داخلی ندارد. فقط نصب بسته‌های Ubuntu ممکن است طبق تنظیمات سیستم از `sudo` استفاده کند.
 
 در Ubuntu Desktop با X11، برنامه در همان نشست گرافیکی اجرا می‌شود. در Ubuntu Server بدون Desktop، یک نشست سبک `Xorg + Openbox` و سرویس `pulsar-kiosk.service` ساخته می‌شود.
 
-## پروفایل کم‌تأخیر این نسخه
-
-پیش‌فرض تولیدی شامل ROI واقعی `1920x1080`، نرخ هدف 60fps، Exposure برابر 12ms، صف `NewestOnly`، سه بافر acquisition، CUDA page-locked output، OpenGL PBO، VSync خاموش و pairing بدون انتظار است. راهنمای کامل نصب و deploy در [LOW_LATENCY_AND_DEPLOYMENT_FA.md](LOW_LATENCY_AND_DEPLOYMENT_FA.md) قرار دارد.
-
-## رفتار دو مانیتور
+## رفتار نمایشگرها
 
 - کوچک‌ترین مانیتور: رابط تنظیمات لمسی در Chrome/Chromium kiosk
 - مانیتور دوم/بزرگ‌تر: خروجی Native C++/SDL2 به‌صورت Side-by-Side
+- مانیتور سوم اختیاری: mirror از همان خروجی SBS برای HDMI/AR/aux
 - در صورت هم‌اندازه بودن مانیتورها، دو خروجی جدا انتخاب می‌شوند.
 - در حالت تک‌مانیتور، UI اجرا و خروجی Native SBS غیرفعال می‌شود تا پنجره‌ها روی هم نیفتند.
 
@@ -123,6 +120,22 @@ cp core/config/dev-sync.env.example core/config/dev-sync.env
 ## تنظیمات مهم
 
 تنظیمات پیش‌فرض در `core/config/pulsar.env` است. تغییرات مخصوص هر دستگاه را فقط در `core/config/pulsar.local.env` قرار دهید؛ از جمله FPS، کیفیت JPEG، اندازه‌ی پردازش، شماره‌سریال دوربین و override نمایشگر.
+
+برای layout سه‌نمایشگره می‌توانید این الگو را استفاده کنید:
+
+```bash
+PULSAR_EXPECTED_DISPLAY_COUNT=3
+PULSAR_PREFERRED_SETTINGS_OUTPUT=HDMI-2
+PULSAR_PREFERRED_MAIN_OUTPUT=DP-1-1
+PULSAR_PREFERRED_AR_OUTPUT=HDMI-1-0
+PULSAR_SETTINGS_MODE=1024x600
+PULSAR_MAIN_MODE=1920x1080
+PULSAR_MAIN_RATE=60.00
+PULSAR_AR_MODE=1920x1080
+PULSAR_AR_RATE=60.00
+```
+
+در این حالت `HDMI-2` برای UI، `DP-1-1` برای SBS و `HDMI-1-0` به‌صورت mirror از همان SBS تنظیم می‌شود.
 
 برای touch، در صورت نیاز می‌توانید نام دستگاه را با `PULSAR_TOUCH_DEVICE_NAME` قفل کنید و برای ریزتنظیم auto-calibration از `PULSAR_TOUCH_INSET_LEFT/RIGHT/TOP/BOTTOM` استفاده کنید.
 

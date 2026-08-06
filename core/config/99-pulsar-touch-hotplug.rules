@@ -1,0 +1,2 @@
+ACTION=="add|change", SUBSYSTEM=="usb", ATTR{idVendor}=="1a86", ATTR{idProduct}=="e5e3", TAG+="systemd", ENV{SYSTEMD_WANTS}+="pulsar-touch-hotplug.service"
+ACTION=="add|change", SUBSYSTEM=="input", ENV{ID_INPUT_TOUCHSCREEN}=="1", TAG+="systemd", ENV{SYSTEMD_WANTS}+="pulsar-touch-hotplug.service"

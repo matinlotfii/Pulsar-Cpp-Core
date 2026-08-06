@@ -130,13 +130,6 @@ class CameraDevice {
       bool online,
       FrameTiming timing = {});
 
-  void publish(
-      uint32_t width,
-      uint32_t height,
-      std::shared_ptr<const PixelBuffer> rgb,
-      bool online,
-      FrameTiming timing = {});
-
   void fail(const std::string& message);
 
   uint32_t slot_;

@@ -2,10 +2,8 @@
 set -euo pipefail
 source "$(dirname "$0")/common.sh"
 load_config
-if [[ "${PULSAR_SMOKE_SKIP_BUILD:-0}" != "1" ]]; then
-  "$PULSAR_ROOT/core/scripts/build-ui.sh"
-  "$PULSAR_ROOT/core/scripts/build-cpp.sh" >/dev/null
-fi
+"$PULSAR_ROOT/core/scripts/build-ui.sh"
+"$PULSAR_ROOT/core/scripts/build-cpp.sh" >/dev/null
 port=4197
 test_dir="$(mktemp -d)"
 cleanup() {
@@ -52,17 +50,13 @@ video="$(find "$test_dir/data/recordings" -name '*.mp4' -size +10k -print -quit)
 [[ -n "$video" ]]
 ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=nw=1:nk=1 "$video" | grep -q 'h264'
 
-curl -fsS "http://127.0.0.1:$port/" | grep -q 'Pulsar HMI'
+curl -fsS "http://127.0.0.1:$port/" | grep -q 'Pulsar Exoscope'
 if command -v node >/dev/null 2>&1; then
   find "$PULSAR_ROOT/ui/dist" -name '*.js' -print0 | xargs -0 -n1 node --check >/dev/null
 fi
-# Python is intentionally used only by the X11 SBS window-placement helper.
-# Bytecode/cache files are build artifacts and must never enter a checkpoint.
-find "$PULSAR_ROOT" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
-unexpected_python="$({
-  find "$PULSAR_ROOT" -type f -name '*.py'     ! -path "$PULSAR_ROOT/core/scripts/place-sbs-window.py" -print
-} | head -n 1)"
-[[ -z "$unexpected_python" ]] || die "Unexpected Python source remains: $unexpected_python"
+if find "$PULSAR_ROOT" -type f \( -name '*.py' -o -name '*.pyc' \) | grep -q .; then
+  die "Python files remain in the project."
+fi
 
 kill "$pid"
 wait "$pid"

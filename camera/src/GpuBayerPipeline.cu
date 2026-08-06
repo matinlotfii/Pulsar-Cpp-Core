@@ -11,7 +11,6 @@
 #include <cstring>
 #include <sstream>
 #include <string>
-#include <vector>
 
 namespace pulsar::camera {
 namespace {
@@ -65,19 +64,15 @@ struct GpuBayerPipeline::Impl {
   uint8_t* deviceRgb = nullptr;
   uint8_t* deviceResized = nullptr;
   uint8_t* hostInput = nullptr;
-
-  struct HostOutputSlot {
-    std::shared_ptr<uint8_t> storage;
-    size_t capacity = 0;
-  };
-  std::vector<HostOutputSlot> hostOutputs;
-  size_t nextHostOutput = 0;
+  uint8_t* hostOutput = nullptr;
 
   size_t deviceBayerCapacity = 0;
   size_t deviceRgbCapacity = 0;
   size_t deviceResizedCapacity = 0;
   size_t hostInputCapacity = 0;
   size_t stagedInputBytes = 0;
+  size_t hostOutputCapacity = 0;
+  bool deviceInputStaged = false;
 
   cudaEvent_t totalStart = nullptr;
   cudaEvent_t h2dDone = nullptr;
@@ -94,7 +89,7 @@ struct GpuBayerPipeline::Impl {
     if (h2dDone != nullptr) cudaEventDestroy(h2dDone);
     if (totalStart != nullptr) cudaEventDestroy(totalStart);
 
-    hostOutputs.clear();
+    if (hostOutput != nullptr) cudaFreeHost(hostOutput);
     if (hostInput != nullptr) cudaFreeHost(hostInput);
     if (deviceResized != nullptr) cudaFree(deviceResized);
     if (deviceRgb != nullptr) cudaFree(deviceRgb);
@@ -158,61 +153,27 @@ struct GpuBayerPipeline::Impl {
     return true;
   }
 
-  bool acquireHostOutput(
-      size_t required,
-      std::shared_ptr<uint8_t>& storage,
-      std::string& error) {
-    constexpr size_t kPreferredPoolSize = 3;
-    constexpr size_t kMaximumPoolSize = 8;
+  bool ensureHostOutput(size_t required, std::string& error) {
+    if (hostOutputCapacity >= required && hostOutput != nullptr) return true;
 
-    if (hostOutputs.empty()) hostOutputs.resize(kPreferredPoolSize);
-
-    const size_t slotCount = hostOutputs.size();
-    for (size_t offset = 0; offset < slotCount; ++offset) {
-      const size_t index = (nextHostOutput + offset) % slotCount;
-      auto& slot = hostOutputs[index];
-      const bool available = !slot.storage || slot.storage.use_count() == 1;
-      if (!available) continue;
-
-      if (!slot.storage || slot.capacity < required) {
-        uint8_t* pointer = nullptr;
-        const cudaError_t status = cudaHostAlloc(
-            reinterpret_cast<void**>(&pointer), required, cudaHostAllocDefault);
-        if (status != cudaSuccess) {
-          error = cudaErrorText("cudaHostAlloc(output pool)", status);
-          return false;
-        }
-        slot.storage = std::shared_ptr<uint8_t>(pointer, [](uint8_t* value) {
-          if (value != nullptr) cudaFreeHost(value);
-        });
-        slot.capacity = required;
+    if (hostOutput != nullptr) {
+      const cudaError_t freeStatus = cudaFreeHost(hostOutput);
+      if (freeStatus != cudaSuccess) {
+        error = cudaErrorText("cudaFreeHost", freeStatus);
+        return false;
       }
-
-      storage = slot.storage;
-      nextHostOutput = (index + 1u) % hostOutputs.size();
-      return true;
+      hostOutput = nullptr;
+      hostOutputCapacity = 0;
     }
 
-    if (hostOutputs.size() >= kMaximumPoolSize) {
-      error = "all CUDA output buffers are still in use";
-      return false;
-    }
-
-    HostOutputSlot slot;
-    uint8_t* pointer = nullptr;
     const cudaError_t status = cudaHostAlloc(
-        reinterpret_cast<void**>(&pointer), required, cudaHostAllocDefault);
+        reinterpret_cast<void**>(&hostOutput), required, cudaHostAllocDefault);
     if (status != cudaSuccess) {
-      error = cudaErrorText("cudaHostAlloc(extra output)", status);
+      error = cudaErrorText("cudaHostAlloc(output)", status);
       return false;
     }
-    slot.storage = std::shared_ptr<uint8_t>(pointer, [](uint8_t* value) {
-      if (value != nullptr) cudaFreeHost(value);
-    });
-    slot.capacity = required;
-    hostOutputs.push_back(slot);
-    storage = hostOutputs.back().storage;
-    nextHostOutput = 0;
+
+    hostOutputCapacity = required;
     return true;
   }
 };
@@ -309,6 +270,61 @@ bool GpuBayerPipeline::stageInput(
 
   std::memcpy(impl_->hostInput, bayer, bytes);
   impl_->stagedInputBytes = bytes;
+  impl_->deviceInputStaged = false;
+  return true;
+}
+
+bool GpuBayerPipeline::stageInputDirectToDevice(
+    const uint8_t* bayer,
+    std::size_t bytes,
+    std::string& error) {
+  error.clear();
+
+  if (!impl_->initialized && !initialize(error)) return false;
+  if (bayer == nullptr || bytes == 0) {
+    error = "invalid direct Bayer input";
+    return false;
+  }
+  if (!impl_->ensureDeviceBuffer(
+          impl_->deviceBayer,
+          impl_->deviceBayerCapacity,
+          bytes,
+          "cudaMalloc(Bayer)",
+          error)) {
+    return false;
+  }
+
+  cudaError_t status = cudaEventRecord(impl_->totalStart, impl_->stream);
+  if (status != cudaSuccess) {
+    error = cudaErrorText("cudaEventRecord(totalStart)", status);
+    return false;
+  }
+
+  // Galaxy owns this memory only until GXQAllBufs. Complete the transfer
+  // before returning; debayer and resize then continue from device memory.
+  status = cudaMemcpyAsync(
+      impl_->deviceBayer,
+      bayer,
+      bytes,
+      cudaMemcpyHostToDevice,
+      impl_->stream);
+  if (status != cudaSuccess) {
+    error = cudaErrorText("cudaMemcpyAsync(direct SDK H2D)", status);
+    return false;
+  }
+  status = cudaEventRecord(impl_->h2dDone, impl_->stream);
+  if (status != cudaSuccess) {
+    error = cudaErrorText("cudaEventRecord(h2dDone)", status);
+    return false;
+  }
+  status = cudaEventSynchronize(impl_->h2dDone);
+  if (status != cudaSuccess) {
+    error = cudaErrorText("cudaEventSynchronize(direct SDK H2D)", status);
+    return false;
+  }
+
+  impl_->stagedInputBytes = bytes;
+  impl_->deviceInputStaged = true;
   return true;
 }
 
@@ -318,12 +334,14 @@ bool GpuBayerPipeline::processStaged(
     BayerPattern pattern,
     uint32_t outputWidth,
     uint32_t outputHeight,
-    std::shared_ptr<const PixelBuffer>& outputRgb,
+    const uint8_t*& outputRgb,
+    std::size_t& outputByteCount,
     GpuBayerTimings& timings,
     std::string& error) {
   timings = {};
   error.clear();
-  outputRgb.reset();
+  outputRgb = nullptr;
+  outputByteCount = 0;
 
   if (!impl_->initialized && !initialize(error)) return false;
 
@@ -344,8 +362,11 @@ bool GpuBayerPipeline::processStaged(
   const size_t outputBytes =
       static_cast<size_t>(outputWidth) * static_cast<size_t>(outputHeight) * 3u;
 
-  if (impl_->hostInput == nullptr || impl_->stagedInputBytes < bayerBytes) {
-    error = "no complete page-locked Bayer frame has been staged";
+  const bool inputAlreadyOnDevice = impl_->deviceInputStaged;
+  impl_->deviceInputStaged = false;
+  if (!inputAlreadyOnDevice &&
+      (impl_->hostInput == nullptr || impl_->stagedInputBytes < bayerBytes)) {
+    error = "no complete Bayer frame has been staged";
     return false;
   }
 
@@ -360,46 +381,41 @@ bool GpuBayerPipeline::processStaged(
           impl_->deviceRgbCapacity,
           fullRgbBytes,
           "cudaMalloc(full RGB)",
-          error)) {
-    return false;
-  }
-
-  const bool resizeRequired =
-      sourceWidth != outputWidth || sourceHeight != outputHeight;
-  if (resizeRequired &&
+          error) ||
       !impl_->ensureDeviceBuffer(
           impl_->deviceResized,
           impl_->deviceResizedCapacity,
           outputBytes,
           "cudaMalloc(resized RGB)",
-          error)) {
+          error) ||
+      !impl_->ensureHostOutput(outputBytes, error)) {
     return false;
   }
 
-  std::shared_ptr<uint8_t> hostOutput;
-  if (!impl_->acquireHostOutput(outputBytes, hostOutput, error)) return false;
+  cudaError_t cudaStatus = cudaSuccess;
+  if (!inputAlreadyOnDevice) {
+    cudaStatus = cudaEventRecord(impl_->totalStart, impl_->stream);
+    if (cudaStatus != cudaSuccess) {
+      error = cudaErrorText("cudaEventRecord(totalStart)", cudaStatus);
+      return false;
+    }
 
-  cudaError_t cudaStatus = cudaEventRecord(impl_->totalStart, impl_->stream);
-  if (cudaStatus != cudaSuccess) {
-    error = cudaErrorText("cudaEventRecord(totalStart)", cudaStatus);
-    return false;
-  }
+    cudaStatus = cudaMemcpyAsync(
+        impl_->deviceBayer,
+        impl_->hostInput,
+        bayerBytes,
+        cudaMemcpyHostToDevice,
+        impl_->stream);
+    if (cudaStatus != cudaSuccess) {
+      error = cudaErrorText("cudaMemcpyAsync(H2D Bayer)", cudaStatus);
+      return false;
+    }
 
-  cudaStatus = cudaMemcpyAsync(
-      impl_->deviceBayer,
-      impl_->hostInput,
-      bayerBytes,
-      cudaMemcpyHostToDevice,
-      impl_->stream);
-  if (cudaStatus != cudaSuccess) {
-    error = cudaErrorText("cudaMemcpyAsync(H2D Bayer)", cudaStatus);
-    return false;
-  }
-
-  cudaStatus = cudaEventRecord(impl_->h2dDone, impl_->stream);
-  if (cudaStatus != cudaSuccess) {
-    error = cudaErrorText("cudaEventRecord(h2dDone)", cudaStatus);
-    return false;
+    cudaStatus = cudaEventRecord(impl_->h2dDone, impl_->stream);
+    if (cudaStatus != cudaSuccess) {
+      error = cudaErrorText("cudaEventRecord(h2dDone)", cudaStatus);
+      return false;
+    }
   }
 
   const NppiSize sourceSize{
@@ -432,8 +448,18 @@ bool GpuBayerPipeline::processStaged(
     return false;
   }
 
-  uint8_t* finalDeviceRgb = impl_->deviceRgb;
-  if (resizeRequired) {
+  if (sourceWidth == outputWidth && sourceHeight == outputHeight) {
+    cudaStatus = cudaMemcpyAsync(
+        impl_->deviceResized,
+        impl_->deviceRgb,
+        outputBytes,
+        cudaMemcpyDeviceToDevice,
+        impl_->stream);
+    if (cudaStatus != cudaSuccess) {
+      error = cudaErrorText("cudaMemcpyAsync(D2D RGB)", cudaStatus);
+      return false;
+    }
+  } else {
     const NppiSize outputSize{
         static_cast<int>(outputWidth),
         static_cast<int>(outputHeight)};
@@ -458,7 +484,6 @@ bool GpuBayerPipeline::processStaged(
       error = nppErrorText("nppiResize_8u_C3R_Ctx", resizeStatus);
       return false;
     }
-    finalDeviceRgb = impl_->deviceResized;
   }
 
   cudaStatus = cudaEventRecord(impl_->resizeDone, impl_->stream);
@@ -468,8 +493,8 @@ bool GpuBayerPipeline::processStaged(
   }
 
   cudaStatus = cudaMemcpyAsync(
-      hostOutput.get(),
-      finalDeviceRgb,
+      impl_->hostOutput,
+      impl_->deviceResized,
       outputBytes,
       cudaMemcpyDeviceToHost,
       impl_->stream);
@@ -498,10 +523,8 @@ bool GpuBayerPipeline::processStaged(
     return false;
   }
 
-  auto pixels = std::make_shared<PixelBuffer>();
-  pixels->storage = std::move(hostOutput);
-  pixels->byteCount = outputBytes;
-  outputRgb = std::move(pixels);
+  outputRgb = impl_->hostOutput;
+  outputByteCount = outputBytes;
   return true;
 }
 
@@ -519,7 +542,8 @@ bool GpuBayerPipeline::process(
       static_cast<size_t>(sourceWidth) * static_cast<size_t>(sourceHeight);
   if (!stageInput(bayer, bayerBytes, error)) return false;
 
-  std::shared_ptr<const PixelBuffer> pinnedOutput;
+  const uint8_t* pinnedOutput = nullptr;
+  std::size_t pinnedOutputBytes = 0;
   if (!processStaged(
           sourceWidth,
           sourceHeight,
@@ -527,14 +551,13 @@ bool GpuBayerPipeline::process(
           outputWidth,
           outputHeight,
           pinnedOutput,
+          pinnedOutputBytes,
           timings,
           error)) {
     return false;
   }
 
-  outputRgb.assign(
-      pinnedOutput->data(),
-      pinnedOutput->data() + pinnedOutput->size());
+  outputRgb.assign(pinnedOutput, pinnedOutput + pinnedOutputBytes);
   return true;
 }
 

@@ -11,9 +11,13 @@
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <pthread.h>
+#include <sstream>
 #include <sched.h>
 #include <string>
 #include <sys/resource.h>
@@ -60,22 +64,13 @@ std::string envString(const char* name, const char* fallback) {
   return value == nullptr || *value == '\0' ? std::string{fallback} : std::string{value};
 }
 
-int envInt(const char* name, int fallback, int minimum, int maximum) {
-  const char* value = std::getenv(name);
-  if (value == nullptr || *value == '\0') return fallback;
-  char* end = nullptr;
-  const long parsed = std::strtol(value, &end, 10);
-  if (end == value || *end != '\0') return fallback;
-  return std::clamp(static_cast<int>(parsed), minimum, maximum);
-}
-
 enum class StereoPairingMode {
   LegacyHold,
   Latest,
 };
 
 StereoPairingMode stereoPairingModeFromEnvironment() {
-  std::string value = envString("PULSAR_STEREO_PAIRING_MODE", "latest");
+  std::string value = envString("PULSAR_STEREO_PAIRING_MODE", "legacy-hold");
   std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
     return static_cast<char>(std::tolower(c));
   });
@@ -315,12 +310,121 @@ std::array<CameraStatus, 2> chooseStereoPair(
   return pair.cameras;
 }
 
-bool is2dMode(const core::DisplayControls& display) {
-  return display.mainDisplayMode == "2D";
+std::vector<std::string> splitList(const std::string& value, char delimiter) {
+  std::vector<std::string> items;
+  std::istringstream stream(value);
+  std::string item;
+  while (std::getline(stream, item, delimiter)) {
+    if (!item.empty()) items.push_back(item);
+  }
+  return items;
 }
 
-bool isLineInterleavedMode(const core::DisplayControls& display) {
-  return display.mainDisplayMode == "3D" && display.stereoMode == "LineInterleaved";
+SDL_Rect parseGeometry(const std::string& geometry) {
+  SDL_Rect rect{};
+  int width = 0;
+  int height = 0;
+  int x = 0;
+  int y = 0;
+  if (std::sscanf(geometry.c_str(), "%dx%d+%d+%d", &width, &height, &x, &y) == 4) {
+    rect = {x, y, width, height};
+  }
+  return rect;
+}
+
+
+struct ViewerPanel {
+  size_t profileIndex = 0;
+  SDL_Rect rect{};
+};
+
+struct ViewerLayout {
+  SDL_Rect bounds{};
+  std::vector<ViewerPanel> panels;
+  std::string generation;
+};
+
+std::optional<ViewerPanel> parsePanelSpec(const std::string& value) {
+  const auto separator = value.find(':');
+  if (separator == std::string::npos) return std::nullopt;
+  char* end = nullptr;
+  const unsigned long profile = std::strtoul(value.substr(0, separator).c_str(), &end, 10);
+  if (end == nullptr || *end != '\0' || profile > 2) return std::nullopt;
+  const SDL_Rect rect = parseGeometry(value.substr(separator + 1));
+  if (rect.w <= 0 || rect.h <= 0) return std::nullopt;
+  return ViewerPanel{static_cast<size_t>(profile), rect};
+}
+
+ViewerLayout loadViewerLayout(const std::filesystem::path& path,
+                              const SDL_Rect& fallbackBounds) {
+  ViewerLayout layout;
+  layout.bounds = parseGeometry(
+      envString("PULSAR_VIEWER_CANVAS_GEOMETRY", ""));
+  std::string panelSpecs = envString("PULSAR_VIEWER_PANEL_SPECS", "");
+
+  std::ifstream input(path);
+  std::string line;
+  while (std::getline(input, line)) {
+    if (line.empty() || line[0] == '#') continue;
+    const auto separator = line.find('=');
+    if (separator == std::string::npos) continue;
+    const std::string key = line.substr(0, separator);
+    const std::string value = line.substr(separator + 1);
+    if (key == "PULSAR_VIEWER_CANVAS_GEOMETRY") {
+      layout.bounds = parseGeometry(value);
+    } else if (key == "PULSAR_VIEWER_PANEL_SPECS") {
+      panelSpecs = value;
+    } else if (key == "PULSAR_VIEWER_LAYOUT_GENERATION") {
+      layout.generation = value;
+    }
+  }
+
+  if (layout.bounds.w <= 0 || layout.bounds.h <= 0) {
+    layout.bounds = fallbackBounds;
+  }
+  if (layout.bounds.w <= 0 || layout.bounds.h <= 0) {
+    layout.bounds = SDL_Rect{0, 0, 1, 1};
+  }
+
+  for (const auto& item : splitList(panelSpecs, ';')) {
+    if (const auto panel = parsePanelSpec(item)) layout.panels.push_back(*panel);
+  }
+  return layout;
+}
+
+bool sameLayout(const ViewerLayout& left, const ViewerLayout& right) {
+  if (left.bounds.x != right.bounds.x || left.bounds.y != right.bounds.y ||
+      left.bounds.w != right.bounds.w || left.bounds.h != right.bounds.h ||
+      left.panels.size() != right.panels.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < left.panels.size(); ++i) {
+    const auto& a = left.panels[i];
+    const auto& b = right.panels[i];
+    if (a.profileIndex != b.profileIndex || a.rect.x != b.rect.x ||
+        a.rect.y != b.rect.y || a.rect.w != b.rect.w ||
+        a.rect.h != b.rect.h) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::string outputModeFor(const core::DisplayControls& display, size_t profileIndex) {
+  if (profileIndex < display.outputModes.size()) {
+    const auto& mode = display.outputModes[profileIndex];
+    if (mode == "2D" || mode == "3D") return mode;
+  }
+  return profileIndex == 0 ? display.mainDisplayMode : "3D";
+}
+
+bool is2dMode(const core::DisplayControls& display, size_t profileIndex) {
+  return outputModeFor(display, profileIndex) == "2D";
+}
+
+bool isLineInterleavedMode(const core::DisplayControls& display, size_t profileIndex) {
+  return outputModeFor(display, profileIndex) == "3D" &&
+         display.stereoMode == "LineInterleaved";
 }
 
 int chooseDisplay(int requested, const std::string& requestedName) {
@@ -524,23 +628,27 @@ void renderFrame(SDL_Renderer* renderer, GlPboUploader* uploader, TextureSlot& s
 
 void renderTexture(SDL_Renderer* renderer, GlPboUploader* uploader, TextureSlot& slot,
                    const std::vector<uint8_t>& rgb, uint32_t width, uint32_t height,
-                   const SDL_Rect& destination) {
+                   uint64_t frameKey, const SDL_Rect& destination) {
   if (slot.texture == nullptr || slot.width != width || slot.height != height) {
     if (slot.texture) SDL_DestroyTexture(slot.texture);
     slot.texture = makeTexture(renderer, width, height);
     slot.width = width;
     slot.height = height;
+    slot.frameId = 0;
   }
   if (!slot.texture || rgb.empty()) return;
-  const auto uploadStart = std::chrono::steady_clock::now();
-  const int updateStatus =
-      uploadTexturePixels(renderer, uploader, slot, rgb.data(), width, height);
-  const auto uploadEnd = std::chrono::steady_clock::now();
-  slot.lastUploadMs = milliseconds(uploadEnd - uploadStart);
-  slot.uploadedThisLoop = true;
-  if (updateStatus != 0) {
-    std::cerr << "SDL composite texture update failed: " << SDL_GetError() << '\n';
-    return;
+  if (slot.frameId != frameKey) {
+    const auto uploadStart = std::chrono::steady_clock::now();
+    const int updateStatus =
+        uploadTexturePixels(renderer, uploader, slot, rgb.data(), width, height);
+    const auto uploadEnd = std::chrono::steady_clock::now();
+    slot.lastUploadMs = milliseconds(uploadEnd - uploadStart);
+    slot.uploadedThisLoop = true;
+    if (updateStatus != 0) {
+      std::cerr << "SDL composite texture update failed: " << SDL_GetError() << '\n';
+      return;
+    }
+    slot.frameId = frameKey;
   }
   SDL_RenderCopyEx(renderer, slot.texture, nullptr, &destination, 0.0, nullptr, SDL_FLIP_NONE);
 }
@@ -564,11 +672,9 @@ void SbsRenderer::stop() {
 
 void SbsRenderer::loop() {
   elevateRendererPriority();
-  const bool pboRequested = envEnabled("PULSAR_GL_PBO_UPLOAD", true);
-  const bool vsyncEnabled = envEnabled("PULSAR_VSYNC", false);
-  const bool allowSoftwareRenderer = envEnabled("PULSAR_ALLOW_SOFTWARE_RENDERER", false);
-  const int renderWaitMs = envInt("PULSAR_RENDER_WAIT_MS", 4, 0, 16);
+  const bool pboRequested = envEnabled("PULSAR_GL_PBO_UPLOAD");
   const StereoPairingMode pairingMode = stereoPairingModeFromEnvironment();
+  std::cerr << "SBS Renderer: direct-rtx-single-target=1 vsync=" << (envEnabled("PULSAR_SBS_PRESENT_VSYNC", false) ? "on" : "off") << '\n';
   std::cerr << "SBS Renderer: stereo-pairing-mode="
             << stereoPairingModeName(pairingMode) << '\n';
   SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
@@ -585,9 +691,17 @@ void SbsRenderer::loop() {
     running_ = false;
     return;
   }
-  SDL_Rect bounds{};
-  SDL_GetDisplayBounds(displayIndex_, &bounds);
-  SDL_Window* window = SDL_CreateWindow("Pulsar SBS", bounds.x, bounds.y, bounds.w, bounds.h,
+
+  SDL_Rect fallbackBounds{};
+  SDL_GetDisplayBounds(displayIndex_, &fallbackBounds);
+  const std::filesystem::path layoutPath =
+      config_.dataRoot / "viewer-layout.env";
+  ViewerLayout viewerLayout = loadViewerLayout(layoutPath, fallbackBounds);
+  SDL_Rect bounds = viewerLayout.bounds;
+  std::vector<ViewerPanel> panels = viewerLayout.panels;
+
+  SDL_Window* window = SDL_CreateWindow(
+      "Pulsar Multi-Output Viewer", bounds.x, bounds.y, bounds.w, bounds.h,
       SDL_WINDOW_BORDERLESS | SDL_WINDOW_SHOWN | SDL_WINDOW_ALLOW_HIGHDPI);
   if (!window) {
     std::cerr << "SDL window creation failed: " << SDL_GetError() << '\n';
@@ -595,13 +709,16 @@ void SbsRenderer::loop() {
     running_ = false;
     return;
   }
-  SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+  std::cerr << "SBS Renderer: viewer-layout-ready=1 dynamic=1 canvas="
+            << bounds.w << "x" << bounds.h << "+" << bounds.x << "+" << bounds.y
+            << " panels=" << panels.size()
+            << " shared-texture-upload=1 profiles=3" << '\n';
   uint32_t rendererFlags = SDL_RENDERER_ACCELERATED;
-  if (vsyncEnabled) rendererFlags |= SDL_RENDERER_PRESENTVSYNC;
-  SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, rendererFlags);
-  if (!renderer && allowSoftwareRenderer) {
-    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
+  if (envEnabled("PULSAR_SBS_PRESENT_VSYNC", false)) {
+    rendererFlags |= SDL_RENDERER_PRESENTVSYNC;
   }
+  SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, rendererFlags);
+  if (!renderer) renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
   if (!renderer) {
     std::cerr << "SDL renderer creation failed: " << SDL_GetError() << '\n';
     SDL_DestroyWindow(window);
@@ -613,10 +730,7 @@ void SbsRenderer::loop() {
   SDL_RendererInfo rendererInfo{};
   if (SDL_GetRendererInfo(renderer, &rendererInfo) == 0 && rendererInfo.name != nullptr) {
     std::cerr << "SBS Renderer: backend=" << rendererInfo.name
-              << " flags=" << rendererInfo.flags
-              << " vsync=" << (vsyncEnabled ? "on" : "off")
-              << " software-fallback=" << (allowSoftwareRenderer ? "allowed" : "disabled")
-              << '\n';
+              << " flags=" << rendererInfo.flags << '\n';
   }
 
   GlPboUploader pboUploader;
@@ -657,9 +771,43 @@ void SbsRenderer::loop() {
   uint64_t cameraFrameIdDeltaSamples = 0;
   uint64_t heldPairLoops = 0;
   auto reportStart = std::chrono::steady_clock::now();
-  uint64_t lastLeftFrameId = 0;
+  auto nextLayoutCheck = reportStart;
+  std::filesystem::file_time_type layoutWriteTime{};
+  try {
+    if (std::filesystem::exists(layoutPath)) {
+      layoutWriteTime = std::filesystem::last_write_time(layoutPath);
+    }
+  } catch (...) {
+  }
 
   while (running_) {
+    const auto loopNow = std::chrono::steady_clock::now();
+    if (loopNow >= nextLayoutCheck) {
+      nextLayoutCheck = loopNow + std::chrono::milliseconds(200);
+      bool changed = false;
+      std::filesystem::file_time_type currentWrite{};
+      try {
+        if (std::filesystem::exists(layoutPath)) {
+          currentWrite = std::filesystem::last_write_time(layoutPath);
+          changed = currentWrite != layoutWriteTime;
+        }
+      } catch (...) {
+      }
+      if (changed) {
+        ViewerLayout updated = loadViewerLayout(layoutPath, viewerLayout.bounds);
+        layoutWriteTime = currentWrite;
+        if (!sameLayout(viewerLayout, updated)) {
+          viewerLayout = std::move(updated);
+          bounds = viewerLayout.bounds;
+          panels = viewerLayout.panels;
+          SDL_SetWindowPosition(window, bounds.x, bounds.y);
+          SDL_SetWindowSize(window, bounds.w, bounds.h);
+          std::cerr << "SBS Renderer: live-layout-update=1 canvas="
+                    << bounds.w << "x" << bounds.h << "+" << bounds.x << "+" << bounds.y
+                    << " panels=" << panels.size() << '\n';
+        }
+      }
+    }
     for (auto& slot : textures) {
       slot.uploadedThisLoop = false;
       slot.lastUploadMs = 0.0;
@@ -669,38 +817,84 @@ void SbsRenderer::loop() {
     int width = 0, height = 0;
     SDL_GetRendererOutputSize(renderer, &width, &height);
     const auto state = state_.snapshot();
-    CameraStatus leftStatus;
-    cameras_.waitForFrame(0, lastLeftFrameId, leftStatus, renderWaitMs);
-    if (leftStatus.frame) lastLeftFrameId = leftStatus.frame->id;
-    const std::array<CameraStatus, 2> latest{{std::move(leftStatus), cameras_.snapshot(1)}};
+    const std::array<CameraStatus, 2> latest{{cameras_.snapshot(0), cameras_.snapshot(1)}};
     const auto paired = chooseStereoPair(stereoPair, latest, pairingMode);
-    const int gap = std::clamp(state.display.gapPx, 0, std::max(0, width / 4));
-    const int halfWidth = std::max(1, (width - gap) / 2);
-    std::array<SDL_Rect, 2> destinations{{{0, 0, halfWidth, height}, {halfWidth + gap, 0, width - halfWidth - gap, height}}};
-    std::array<size_t, 2> sourceIndex{{0, 1}};
-    if (state.display.swapEyes) std::swap(sourceIndex[0], sourceIndex[1]);
+
+    // PULSAR_DEGRADED_MONO_FALLBACK_V1
+    // If one USB camera is unavailable, duplicate the healthy camera onto all
+    // physical outputs. True stereo resumes automatically when both return.
+    auto renderPair = paired;
+    auto renderControls = state.cameras;
+    const bool degradedMono =
+        static_cast<bool>(paired[0].frame) !=
+        static_cast<bool>(paired[1].frame);
+
+    if (!renderPair[0].frame && renderPair[1].frame) {
+      renderPair[0] = renderPair[1];
+      renderControls[0] = renderControls[1];
+    } else if (!renderPair[1].frame && renderPair[0].frame) {
+      renderPair[1] = renderPair[0];
+      renderControls[1] = renderControls[0];
+    }
 
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
-    if (is2dMode(state.display)) {
-      const size_t cameraIndex = state.display.swapEyes ? 1u : 0u;
-      const bool mirror = cameraIndex == 0 ? state.display.mirrorLeft : state.display.mirrorRight;
-      const auto [alignXRatio, alignYRatio] = stereoAlignRatios(state.display, cameraIndex);
-      renderFrame(renderer, uploader, textures[cameraIndex], paired[cameraIndex], state.cameras[cameraIndex],
-                  SDL_Rect{0, 0, width, height}, mirror, static_cast<uint8_t>(cameraIndex * 23u), alignXRatio, alignYRatio);
-    } else if (isLineInterleavedMode(state.display)) {
-      composeLineInterleaved(textures[0], textures[1], paired, state.cameras, state.display,
-                             static_cast<uint32_t>(width), static_cast<uint32_t>(height),
-                             lineInterleaved, leftOffline, rightOffline, leftCrop, rightCrop, leftScaled, rightScaled);
-      renderTexture(renderer, uploader, composite, lineInterleaved, static_cast<uint32_t>(width), static_cast<uint32_t>(height),
-                    SDL_Rect{0, 0, width, height});
-    } else {
-      for (size_t side = 0; side < 2; ++side) {
-        const size_t cameraIndex = sourceIndex[side];
-        const bool mirror = cameraIndex == 0 ? state.display.mirrorLeft : state.display.mirrorRight;
-        const auto [alignXRatio, alignYRatio] = stereoAlignRatios(state.display, cameraIndex);
-        renderFrame(renderer, uploader, textures[cameraIndex], paired[cameraIndex], state.cameras[cameraIndex],
-                    destinations[side], mirror, static_cast<uint8_t>(cameraIndex * 23u), alignXRatio, alignYRatio);
+
+    const uint64_t leftFrameId = renderPair[0].frame ? renderPair[0].frame->id : 0ULL;
+    const uint64_t rightFrameId = renderPair[1].frame ? renderPair[1].frame->id : 0ULL;
+    const uint64_t compositeKey = (leftFrameId * 0x9E3779B185EBCA87ULL) ^ rightFrameId;
+
+    for (const auto& viewerPanel : panels) {
+      const size_t profileIndex = viewerPanel.profileIndex;
+      if (profileIndex >= 3) continue;
+      const SDL_Rect panel = viewerPanel.rect;
+      const int gap = std::clamp(
+          state.display.gapPx, 0, std::max(0, panel.w / 4));
+      const int halfWidth = std::max(1, (panel.w - gap) / 2);
+      std::array<SDL_Rect, 2> destinations{{
+          {panel.x, panel.y, halfWidth, panel.h},
+          {panel.x + halfWidth + gap, panel.y,
+           panel.w - halfWidth - gap, panel.h},
+      }};
+      std::array<size_t, 2> sourceIndex{{0, 1}};
+      if (state.display.swapEyes) std::swap(sourceIndex[0], sourceIndex[1]);
+
+      if (is2dMode(state.display, profileIndex)) {
+        const size_t cameraIndex = state.display.swapEyes ? 1u : 0u;
+        const bool mirror = cameraIndex == 0
+                                ? state.display.mirrorLeft
+                                : state.display.mirrorRight;
+        const auto [alignXRatio, alignYRatio] =
+            stereoAlignRatios(state.display, cameraIndex);
+        renderFrame(
+            renderer, uploader, textures[cameraIndex], renderPair[cameraIndex],
+            renderControls[cameraIndex], panel, mirror,
+            static_cast<uint8_t>(cameraIndex * 23u),
+            alignXRatio, alignYRatio);
+      } else if (isLineInterleavedMode(state.display, profileIndex)) {
+        composeLineInterleaved(
+            textures[0], textures[1], renderPair, renderControls, state.display,
+            static_cast<uint32_t>(panel.w), static_cast<uint32_t>(panel.h),
+            lineInterleaved, leftOffline, rightOffline, leftCrop, rightCrop,
+            leftScaled, rightScaled);
+        renderTexture(
+            renderer, uploader, composite, lineInterleaved,
+            static_cast<uint32_t>(panel.w), static_cast<uint32_t>(panel.h),
+            compositeKey, panel);
+      } else {
+        for (size_t side = 0; side < 2; ++side) {
+          const size_t cameraIndex = sourceIndex[side];
+          const bool mirror = cameraIndex == 0
+                                  ? state.display.mirrorLeft
+                                  : state.display.mirrorRight;
+          const auto [alignXRatio, alignYRatio] =
+              stereoAlignRatios(state.display, cameraIndex);
+          renderFrame(
+              renderer, uploader, textures[cameraIndex], renderPair[cameraIndex],
+              renderControls[cameraIndex], destinations[side], mirror,
+              static_cast<uint8_t>(cameraIndex * 23u),
+              alignXRatio, alignYRatio);
+        }
       }
     }
     const uint64_t ageNowNs = nowNs();
@@ -771,6 +965,7 @@ void SbsRenderer::loop() {
 
       std::cerr << "SBS Renderer: latency-stats"
                 << " pairing-mode=" << stereoPairingModeName(pairingMode)
+                << " degraded-mono=" << (degradedMono ? 1 : 0)
                 << " loop-fps=" << (static_cast<double>(reportLoops) / reportElapsed.count())
                 << " left-host-age-ms=" << (leftAgeMsSum / ageDivisor)
                 << " right-host-age-ms=" << (rightAgeMsSum / ageDivisor)

@@ -36,8 +36,9 @@ export type CameraField = "zoom" | "focus" | "brightness";
 export type CameraCycleField = "whiteBalance" | "enhance";
 export type WhiteBalanceMode = "Auto" | "Warm" | "Cool" | "Manual";
 export type EnhanceMode = "Low" | "Medium" | "High";
-export type DisplayEndpointId = "left-eye" | "right-eye" | "touch-lcd" | "display-4k";
+export type DisplayEndpointId = "display" | "ar-glass-1" | "ar-glass-2";
 export type DisplayMode = "2D" | "3D";
+export type DisplayPortRole = "none" | "ui" | "display" | "ar-glass-1" | "ar-glass-2";
 export type AudioSource = "Camera Left" | "Camera Right" | "Mixed";
 export type SaveTarget = "Internal Storage" | "External USB" | "Network Share";
 export type StereoMode = "SBS" | "Line Interleaved";
@@ -58,7 +59,7 @@ export type SystemPanelId =
   | "System Update"
   | "Temperature"
   | "Fan Speed"
-  | "Power"
+  | "Display Routing"
   | "Diagnostics"
   | "Logs"
   | "About";
@@ -159,10 +160,47 @@ export interface DisplayEndpointState {
   id: DisplayEndpointId;
   icon: IconName;
   label: string;
+  connector: string;
+  connected: boolean;
   mode: DisplayMode;
-  brightness: number;
   volume: number;
+  muted: boolean;
+  buttonSoundEnabled: boolean;
   active: boolean;
+}
+
+export interface DisplayPortState {
+  connector: string;
+  connected: boolean;
+  primary: boolean;
+  role: DisplayPortRole;
+  resolution: string;
+  position: string;
+  refreshRate: string;
+  summary: string;
+}
+
+export interface SystemInfoState {
+  storageFreeBytes: number;
+  storageTotalBytes: number;
+  storageUsedPercent: number;
+  storageMount: string;
+  updateStatus: string;
+  temperatureC: number;
+  fanRpm: number;
+  fanMode: string;
+  logLines: number;
+  uptimeSeconds: number;
+  cpuLoad: number;
+  memoryUsedPercent: number;
+  processRssBytes: number;
+  connectedPortCount: number;
+  totalPortCount: number;
+  restartPending: boolean;
+  aboutProduct: string;
+  aboutCompany: string;
+  aboutWebsite: string;
+  aboutSummary: string;
 }
 
 export type PedalMap = Record<PedalGesture, PedalAction>;
@@ -185,6 +223,8 @@ export interface HmiControlState {
   robotVector: string;
   systemPanel: SystemPanelId;
   systemChecks: number;
+  systemInfo: SystemInfoState;
+  displayPorts: DisplayPortState[];
   toast: string;
 }
 
@@ -196,10 +236,32 @@ export const stereoRotations = [0, 90, 180, 270];
 export const pedalActions: PedalAction[] = ["Snapshot", "Record", "Freeze", "Zoom In", "Zoom Out", "Focus Near", "Focus Far"];
 
 export const displayDefaults: Record<DisplayEndpointId, DisplayEndpointState> = {
-  "left-eye": { id: "left-eye", icon: "Glasses", label: "Left Eye (XREAL L)", mode: "3D", brightness: 70, volume: 50, active: true },
-  "right-eye": { id: "right-eye", icon: "Glasses", label: "Right Eye (XREAL R)", mode: "3D", brightness: 70, volume: 50, active: true },
-  "touch-lcd": { id: "touch-lcd", icon: "Monitor", label: "Touch LCD (7\")", mode: "2D", brightness: 78, volume: 42, active: true },
-  "display-4k": { id: "display-4k", icon: "Tablet", label: "4K Display", mode: "2D", brightness: 62, volume: 35, active: false }
+  display: { id: "display", icon: "Monitor", label: "Display", connector: "", connected: false, mode: "2D", volume: 125, muted: false, buttonSoundEnabled: true, active: true },
+  "ar-glass-1": { id: "ar-glass-1", icon: "Glasses", label: "AR Glass 1", connector: "", connected: false, mode: "3D", volume: 125, muted: false, buttonSoundEnabled: true, active: false },
+  "ar-glass-2": { id: "ar-glass-2", icon: "Glasses", label: "AR Glass 2", connector: "", connected: false, mode: "3D", volume: 125, muted: false, buttonSoundEnabled: true, active: false }
+};
+
+export const initialSystemInfo: SystemInfoState = {
+  storageFreeBytes: 0,
+  storageTotalBytes: 0,
+  storageUsedPercent: 0,
+  storageMount: "/data",
+  updateStatus: "Checking",
+  temperatureC: 0,
+  fanRpm: 0,
+  fanMode: "Auto",
+  logLines: 0,
+  uptimeSeconds: 0,
+  cpuLoad: 0,
+  memoryUsedPercent: 0,
+  processRssBytes: 0,
+  connectedPortCount: 0,
+  totalPortCount: 0,
+  restartPending: false,
+  aboutProduct: "PULSAR",
+  aboutCompany: "NAP Tech",
+  aboutWebsite: "nap-tech.com",
+  aboutSummary: "3D microscope platform"
 };
 
 export const defaultPedalMap: PedalMap = {
@@ -216,16 +278,16 @@ export const initialHmiState: HmiControlState = {
     { zoom: 2.1, focus: 15, brightness: 60, whiteBalance: "Auto", enhance: "Medium", frozen: false, recording: false, rotation: 0, status: "Live" },
     { zoom: 2.1, focus: 15, brightness: 60, whiteBalance: "Auto", enhance: "Medium", frozen: false, recording: false, rotation: 0, status: "Live" }
   ],
-  activeDisplay: "left-eye",
+  activeDisplay: "display",
   displays: displayDefaults,
   audioSource: "Camera Left",
   saveTarget: "Internal Storage",
-  recordingActive: false,
-  recordingElapsed: 0,
+  recordingActive: true,
+  recordingElapsed: 12 * 60 + 35,
   stereoMode: "SBS",
   stereoDepth: 5,
   stereoRotation: 0,
-  eyeSwap: false,
+  eyeSwap: true,
   selectedPedal: "left",
   pedalMaps: {
     left: { ...defaultPedalMap },
@@ -235,5 +297,7 @@ export const initialHmiState: HmiControlState = {
   robotVector: "Home",
   systemPanel: "Storage",
   systemChecks: 0,
+  systemInfo: initialSystemInfo,
+  displayPorts: [],
   toast: ""
 };

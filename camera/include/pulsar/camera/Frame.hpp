@@ -1,26 +1,11 @@
 #pragma once
 
-#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
 
 namespace pulsar::camera {
-
-// Shared RGB storage. CUDA builds can keep page-locked output buffers alive
-// without copying them into a std::vector for every frame. CPU builds use the
-// same interface with ordinary heap storage.
-struct PixelBuffer {
-  std::shared_ptr<uint8_t> storage;
-  std::size_t byteCount = 0;
-
-  const uint8_t* data() const { return storage.get(); }
-  uint8_t* data() { return storage.get(); }
-  std::size_t size() const { return byteCount; }
-  bool empty() const { return storage == nullptr || byteCount == 0; }
-  uint8_t operator[](std::size_t index) const { return storage.get()[index]; }
-};
 
 struct FrameTiming {
   // Camera clock values are useful for sequence/drop analysis, but they are
@@ -41,7 +26,7 @@ struct Frame {
   uint64_t id = 0;
   uint64_t timestampNs = 0;
   FrameTiming timing;
-  std::shared_ptr<const PixelBuffer> rgb;
+  std::shared_ptr<const std::vector<uint8_t>> rgb;
   std::shared_ptr<const std::vector<uint8_t>> jpeg;
 };
 

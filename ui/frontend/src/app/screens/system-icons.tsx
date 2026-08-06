@@ -1,4 +1,4 @@
-import { Activity, BadgeCheck, Disc3, HardDrive, RefreshCcw, ShieldCheck, Sparkles, Wifi, Wrench, type LucideIcon } from "lucide-react";
+import { Activity, BadgeCheck, Disc3, HardDrive, RefreshCcw, Route, Sparkles, Wifi, Wrench, type LucideIcon } from "lucide-react";
 
 export const systemIconMap: Record<string, LucideIcon> = {
   Activity,
@@ -6,7 +6,7 @@ export const systemIconMap: Record<string, LucideIcon> = {
   Disc3,
   HardDrive,
   RefreshCcw,
-  ShieldCheck,
+  Route,
   Sparkles,
   Wifi,
   Wrench

@@ -23,31 +23,33 @@ struct Config {
       std::filesystem::path{"camera/profiles/FCU22080659.txt"}};
 
   // Import the GalaxyView profile before starting camera streaming.
-  bool cameraProfileEnabled = false;
+  bool cameraProfileEnabled = true;
 
   // Ask Galaxy SDK to verify imported values.
   bool cameraProfileVerify = true;
 
   // If the profile is missing or cannot be imported,
   // do not silently start with different settings.
-  bool cameraProfileRequired = false;
+  bool cameraProfileRequired = true;
 
   bool headless = false;
   bool renderMainDisplay = true;
 
   int mainDisplayIndex = -1;
   std::string mainDisplayName;
+  int arDisplayIndex = -1;
+  std::string arDisplayName;
   int settingsDisplayIndex = -1;
 
   int cameraFps = 60;
   int previewFps = 15;
 
-  uint32_t cameraMaxWidth = 1920;
-  uint32_t cameraMaxHeight = 1080;
-  int cameraSensorScale = 1;
+  uint32_t cameraMaxWidth = 1280;
+  uint32_t cameraMaxHeight = 720;
+  int cameraSensorScale = 4;
 
   int cameraBrightness = 60;
-  double cameraExposureUs = 12000.0;
+  double cameraExposureUs = 29000.0;
   double cameraGainDb = 6.0;
   bool cameraAutoExposure = false;
 
