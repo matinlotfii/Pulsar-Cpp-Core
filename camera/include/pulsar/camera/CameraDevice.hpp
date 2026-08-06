@@ -174,6 +174,9 @@ class CameraDevice {
   std::vector<uint8_t> resized_;
   std::vector<uint8_t> previewResized_;
 
+  std::array<std::shared_ptr<std::vector<uint8_t>>, 4> rgbFramePool_{};
+  std::size_t rgbFramePoolCursor_ = 0;
+
   std::unique_ptr<GpuBayerPipeline> gpuPipeline_;
   bool gpuRequested_ = false;
   bool gpuDisabledAfterFailure_ = false;

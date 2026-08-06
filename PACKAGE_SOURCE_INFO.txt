@@ -1,4 +1,5 @@
-Base project tree: e9f2c00dc9e12e7145f57171ff5101f5ae0cda2d
-Reference low-latency image tree: 201af75d4c2f9673750646bbbef9292daad9faa0
-Reference fast renderer/transport lineage: dc2cee028974dfbd52b13bae5e8e5b2f5e77cbaa
-Package purpose: preserve the newer UI/project while using full-sensor camera acquisition and a lower-copy CUDA/RTX display path.
+Package: Pulsar-Cpp-Core-maxfps-softsync-v5-20260806
+Base: clean-replace V4
+Camera changes only: full sensor 4024x3036, 395 MB/s per camera, 32 FPS target, software parallel start sync, reusable RGB frame pool.
+UI source and ui/dist are unchanged from V4.
+Hardware validation occurs on 192.168.1.123 during ./run.sh.

@@ -82,6 +82,10 @@ bool getInt(GX_PORT_HANDLE port, const char* node, GX_INT_VALUE& value) {
   return available(port, node) && GXGetIntValue(port, node, &value) == GX_STATUS_SUCCESS;
 }
 
+bool getFloat(GX_PORT_HANDLE port, const char* node, GX_FLOAT_VALUE& value) {
+  return available(port, node) && GXGetFloatValue(port, node, &value) == GX_STATUS_SUCCESS;
+}
+
 std::string getString(GX_DEV_HANDLE device, const char* node) {
   GX_STRING_VALUE value{};
   return GXGetStringValue(device, node, &value) == GX_STATUS_SUCCESS ? value.strCurValue : std::string{};
@@ -902,6 +906,30 @@ bool CameraDevice::connect() {
             << " sensor-scale=" << configuredSensorScale_
             << " render-max=" << maxWidth_ << "x" << maxHeight_ << '\n';
 
+  GX_INT_VALUE actualThroughput{};
+  GX_FLOAT_VALUE actualFrameRate{};
+  GX_FLOAT_VALUE actualExposure{};
+  const bool haveThroughput =
+      getInt(device_, "DeviceLinkThroughputLimit", actualThroughput);
+  const bool haveFrameRate =
+      getFloat(device_, "AcquisitionFrameRate", actualFrameRate);
+  const bool haveExposure =
+      getFloat(device_, "ExposureTime", actualExposure);
+  const char* syncModeRaw = std::getenv("PULSAR_CAMERA_SYNC_MODE");
+  const std::string syncMode =
+      syncModeRaw == nullptr || *syncModeRaw == '\0'
+          ? std::string{"software-start"}
+          : std::string{syncModeRaw};
+  std::cerr << label_ << ": maxfps-readback"
+            << " link-throughput-bps="
+            << (haveThroughput ? std::to_string(actualThroughput.nCurValue) : std::string{"?"})
+            << " acquisition-fps="
+            << (haveFrameRate ? std::to_string(actualFrameRate.dCurValue) : std::string{"?"})
+            << " exposure-us="
+            << (haveExposure ? std::to_string(actualExposure.dCurValue) : std::string{"?"})
+            << " sync-mode=" << syncMode
+            << '\n';
+
   if (gpuRequested_) {
     if (!GpuBayerPipeline::compiledWithCuda()) {
       gpuDisabledAfterFailure_ = true;
@@ -1004,10 +1032,23 @@ bool CameraDevice::configure() {
       ? static_cast<GX_PORT_HANDLE>(streamHandle)
       : static_cast<GX_PORT_HANDLE>(device_);
 
-  // Large USB transfers and a deep URB queue reduce transfer overhead while
-  // NewestOnly plus two acquisition buffers prevents stale-frame buildup.
-  setInt(streamPort, "StreamTransferSize", 1024 * 1024);
-  setInt(streamPort, "StreamTransferNumberUrb", 200);
+  // Max-rate full-sensor transport. The profile carries the same values, but
+  // applying them here after import prevents an older local profile or camera
+  // user set from silently retaining the 350 MB/s limit that caps 12 MP Bayer
+  // capture near 25-28 fps.
+  const int linkThroughputBps = envInt(
+      "PULSAR_CAMERA_LINK_THROUGHPUT_BPS", 395000000, 100000000, 500000000);
+  const int streamTransferSize = envInt(
+      "PULSAR_STREAM_TRANSFER_SIZE", 1024 * 1024, 64 * 1024, 4 * 1024 * 1024);
+  const int streamTransferUrb = envInt(
+      "PULSAR_STREAM_TRANSFER_URB", 200, 8, 512);
+
+  if (!setEnumOneOf(device_, "DeviceLinkThroughputLimitMode", {"On"})) {
+    setBool(device_, "DeviceLinkThroughputLimitMode", true);
+  }
+  setInt(device_, "DeviceLinkThroughputLimit", linkThroughputBps);
+  setInt(streamPort, "StreamTransferSize", streamTransferSize);
+  setInt(streamPort, "StreamTransferNumberUrb", streamTransferUrb);
   setInt(streamPort, "AcquisitionBufferCachePrec", 40);
   setBool(device_, "FrameStoreCoverActive", true);
   setEnum(device_, "CoverFrameStoreMode", "On");
@@ -1032,7 +1073,10 @@ bool CameraDevice::configure() {
 
   std::cerr << label_ << ": low-latency stream-buffer-mode="
             << streamBufferMode << " acquisition-buffers="
-            << kAcquisitionBufferCount << '\n';
+            << kAcquisitionBufferCount
+            << " link-throughput-requested-bps=" << linkThroughputBps
+            << " transfer-size=" << streamTransferSize
+            << " transfer-urb=" << streamTransferUrb << '\n';
 
   colorFilter_ = GX_COLOR_FILTER_NONE;
 
@@ -1220,7 +1264,25 @@ void CameraDevice::publish(
     resizeRgbBilinearInto(rgb, width, height, outWidth, outHeight, resized_);
     data = resized_.data();
   }
-  auto rgbCopy = std::make_shared<std::vector<uint8_t>>(data, data + static_cast<size_t>(outWidth) * outHeight * 3u);
+  const std::size_t outputBytes =
+      static_cast<std::size_t>(outWidth) * static_cast<std::size_t>(outHeight) * 3u;
+  std::shared_ptr<std::vector<uint8_t>> rgbCopy;
+  for (std::size_t attempt = 0; attempt < rgbFramePool_.size(); ++attempt) {
+    const std::size_t index =
+        (rgbFramePoolCursor_ + attempt) % rgbFramePool_.size();
+    auto& candidate = rgbFramePool_[index];
+    if (!candidate) candidate = std::make_shared<std::vector<uint8_t>>();
+    if (candidate.use_count() == 1) {
+      candidate->resize(outputBytes);
+      std::memcpy(candidate->data(), data, outputBytes);
+      rgbCopy = candidate;
+      rgbFramePoolCursor_ = (index + 1u) % rgbFramePool_.size();
+      break;
+    }
+  }
+  if (!rgbCopy) {
+    rgbCopy = std::make_shared<std::vector<uint8_t>>(data, data + outputBytes);
+  }
   std::shared_ptr<const std::vector<uint8_t>> currentJpeg;
   {
     std::lock_guard<std::mutex> lock(previewMutex_);
