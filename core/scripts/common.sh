@@ -16,10 +16,6 @@ load_config() {
     # shellcheck disable=SC1091
     source "$PULSAR_ROOT/core/config/pulsar.local.env"
   fi
-  if [[ -f "$PULSAR_DATA_DIR/display-routing.env" ]]; then
-    # shellcheck disable=SC1091
-    source "$PULSAR_DATA_DIR/display-routing.env"
-  fi
   set +a
   export PULSAR_UI_ROOT="$PULSAR_ROOT/ui/dist"
   export PULSAR_DATA_ROOT="$PULSAR_DATA_DIR"

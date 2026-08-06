@@ -2,9 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { HmiHeader } from "./chrome";
 import { defaultStereoAutoAlign, requestStereoAutoAlign } from "./camera-stream";
 import { renderDesignedPage, type HmiHandlers } from "./exact-screens";
-import { installGlobalButtonFeedback, lightTapFeedback, playStartupFeedback, primeUiAudio, setUiFeedbackEnabled } from "./feedback";
+import { lightTapFeedback } from "./feedback";
 import { useWifiManager } from "./hooks/use-wifi-manager";
 import {
+  audioSources,
   defaultPedalMap,
   displayDefaults,
   enhanceModes,
@@ -15,7 +16,6 @@ import {
   stereoRotations,
   whiteBalanceModes,
   type CameraControlState,
-  type DisplayPortRole,
   type ExactPageId,
   type HmiControlState,
   type StereoMode,
@@ -23,60 +23,24 @@ import {
 } from "./model";
 import { WifiSheet } from "./wifi-sheet";
 
+interface BackendCameraPayload {
+  index?: number;
+  online?: boolean;
+  error?: string;
+  controls?: Partial<CameraControlState>;
+}
+
 interface BackendStatePayload {
-  cameras?: Array<{
-    controls?: Partial<CameraControlState>;
-  }>;
-  outputs?: Array<{
-    id?: keyof typeof displayDefaults;
-    label?: string;
-    connector?: string;
-    connected?: boolean;
-    mode?: "2D" | "3D";
-    volume?: number;
-    muted?: boolean;
-    buttonSoundEnabled?: boolean;
-    sink?: string;
-  }>;
+  cameras?: BackendCameraPayload[];
   display?: {
     mainDisplayMode?: "2D" | "3D";
     stereoMode?: "SBS" | "LineInterleaved" | "Line Interleaved";
     swapEyes?: boolean;
   };
-  displayPorts?: Array<{
-    connector?: string;
-    connected?: boolean;
-    primary?: boolean;
-    role?: DisplayPortRole;
-    resolution?: string;
-    position?: string;
-    refreshRate?: string;
-    summary?: string;
-  }>;
-  system?: {
-    memoryUsedPercent?: number;
-    cpuLoad?: number;
-    processRssBytes?: number;
-    uptimeSeconds?: number;
-    version?: string;
-  };
-  systemDetails?: {
-    storageFreeBytes?: number;
-    storageTotalBytes?: number;
-    storageUsedPercent?: number;
-    storageMount?: string;
-    updateStatus?: string;
-    temperatureC?: number;
-    fanRpm?: number;
-    fanMode?: string;
-    logLines?: number;
-    connectedPortCount?: number;
-    totalPortCount?: number;
-    restartPending?: boolean;
-    aboutProduct?: string;
-    aboutCompany?: string;
-    aboutWebsite?: string;
-    aboutSummary?: string;
+  recording?: {
+    active?: boolean;
+    elapsedSeconds?: number;
+    lastFile?: string;
   };
 }
 
@@ -96,7 +60,18 @@ function getInitialExactPage(): ExactPageId {
 }
 
 function isBackendStatePayload(payload: unknown): payload is BackendStatePayload {
-  return payload !== null && typeof payload === "object" && "display" in payload;
+  return payload !== null && typeof payload === "object" && ("display" in payload || "cameras" in payload || "recording" in payload);
+}
+
+function isBackendCameraPayload(payload: unknown): payload is BackendCameraPayload {
+  return payload !== null && typeof payload === "object" && "controls" in payload;
+}
+
+function requestErrorMessage(payload: unknown, fallback: string) {
+  if (payload !== null && typeof payload === "object" && "error" in payload && typeof payload.error === "string" && payload.error.trim()) {
+    return payload.error;
+  }
+  return fallback;
 }
 
 function uiStereoModeFromBackend(mode: string | undefined): StereoMode {
@@ -134,17 +109,6 @@ function AppRoot() {
   }, [page.label]);
 
   useEffect(() => {
-    primeUiAudio();
-    playStartupFeedback();
-    return installGlobalButtonFeedback();
-  }, []);
-
-  useEffect(() => {
-    const selectedDisplay = hmiState.displays[hmiState.activeDisplay];
-    setUiFeedbackEnabled(selectedDisplay?.muted !== true);
-  }, [hmiState.activeDisplay, hmiState.displays]);
-
-  useEffect(() => {
     let alive = true;
     const syncAutoAlign = async () => {
       try {
@@ -162,22 +126,24 @@ function AppRoot() {
   }, [autoAlign.active]);
 
   useEffect(() => {
+    let alive = true;
     const loadBackendState = async () => {
       try {
         const response = await fetch("/api/state", { cache: "no-store" });
-        const payload = await response.json().catch(() => null);
-        if (!response.ok || !isBackendStatePayload(payload)) return;
+        const payload = await readJsonResponse(response);
+        if (!alive || !response.ok || !isBackendStatePayload(payload)) return;
         applyBackendState(payload);
       } catch {
+        // Keep the last confirmed state while the backend reconnects.
       }
     };
     void loadBackendState();
-    const refreshMs = activePage === "display-settings" ? 500 : activePage === "system" ? 3000 : 5000;
-    const timer = window.setInterval(loadBackendState, refreshMs);
+    const timer = window.setInterval(loadBackendState, 1000);
     return () => {
+      alive = false;
       window.clearInterval(timer);
     };
-  }, [activePage]);
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -201,14 +167,6 @@ function AppRoot() {
       window.removeEventListener("wheel", handleWheel);
     };
   }, []);
-
-  useEffect(() => {
-    if (!hmiState.recordingActive) return undefined;
-    const interval = window.setInterval(() => {
-      setHmiState((current) => ({ ...current, recordingElapsed: current.recordingElapsed + 1 }));
-    }, 1000);
-    return () => window.clearInterval(interval);
-  }, [hmiState.recordingActive]);
 
   useEffect(() => () => {
     if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
@@ -240,25 +198,13 @@ function AppRoot() {
 
   function applyBackendState(payload: BackendStatePayload) {
     setHmiState((current) => {
-      const nextDisplays = { ...current.displays };
-      for (const [id, display] of Object.entries(nextDisplays) as Array<[keyof typeof displayDefaults, typeof displayDefaults[keyof typeof displayDefaults]]>) {
-        nextDisplays[id] = { ...display, connected: false, active: false };
-      }
-      for (const output of payload.outputs ?? []) {
-        if (!output.id || !(output.id in nextDisplays)) continue;
-        const currentDisplay = nextDisplays[output.id];
-        nextDisplays[output.id] = {
-          ...currentDisplay,
-          label: typeof output.label === "string" ? output.label : currentDisplay.label,
-          connector: typeof output.connector === "string" ? output.connector : currentDisplay.connector,
-          connected: output.connected === true,
-          mode: output.mode === "2D" ? "2D" : "3D",
-          volume: typeof output.volume === "number" ? clamp(output.volume, 0, 125) : currentDisplay.volume,
-          muted: typeof output.muted === "boolean" ? output.muted : currentDisplay.muted,
-          buttonSoundEnabled: typeof output.buttonSoundEnabled === "boolean" ? output.buttonSoundEnabled : currentDisplay.buttonSoundEnabled,
-          active: output.connected === true
-        };
-      }
+      const mainDisplayMode = payload.display?.mainDisplayMode === "2D" ? "2D" : "3D";
+      const nonTouchDisplays = Object.fromEntries(
+        Object.entries(current.displays).map(([id, display]) => [
+          id,
+          id === "touch-lcd" ? display : { ...display, mode: mainDisplayMode }
+        ])
+      ) as typeof displayDefaults;
 
       const cameras = current.cameras.map((camera, index) => {
         const controls = payload.cameras?.[index]?.controls;
@@ -275,60 +221,101 @@ function AppRoot() {
         };
       }) as [CameraControlState, CameraControlState];
 
-      const fallbackDisplay = (Object.values(nextDisplays).find((display) => display.connected)?.id ?? current.activeDisplay);
-      const displayPorts = (payload.displayPorts ?? []).map((port) => {
-        const role: DisplayPortRole =
-          port.role === "ui" ||
-          port.role === "display" ||
-          port.role === "ar-glass-1" ||
-          port.role === "ar-glass-2"
-            ? port.role
-            : "none";
-        return {
-          connector: typeof port.connector === "string" ? port.connector : "",
-          connected: port.connected === true,
-          primary: port.primary === true,
-          role,
-          resolution: typeof port.resolution === "string" ? port.resolution : "",
-          position: typeof port.position === "string" ? port.position : "",
-          refreshRate: typeof port.refreshRate === "string" ? port.refreshRate : "",
-          summary: typeof port.summary === "string" ? port.summary : ""
-        };
-      });
+      const recordingActive = typeof payload.recording?.active === "boolean" ? payload.recording.active : current.recordingActive;
+      const recordingElapsed = typeof payload.recording?.elapsedSeconds === "number" ? payload.recording.elapsedSeconds : current.recordingElapsed;
+      const recordingCameras = cameras.map((camera) => ({
+        ...camera,
+        recording: recordingActive,
+        status: recordingActive ? "Recording" : camera.status === "Recording" ? "Live" : camera.status
+      })) as [CameraControlState, CameraControlState];
 
       return {
         ...current,
-        cameras,
-        displays: nextDisplays,
-        activeDisplay: nextDisplays[current.activeDisplay].connected ? current.activeDisplay : fallbackDisplay,
+        cameras: recordingCameras,
+        displays: nonTouchDisplays,
+        recordingActive,
+        recordingElapsed,
         stereoMode: uiStereoModeFromBackend(payload.display?.stereoMode),
-        eyeSwap: typeof payload.display?.swapEyes === "boolean" ? payload.display.swapEyes : current.eyeSwap,
-        displayPorts,
-        systemInfo: {
-          ...current.systemInfo,
-          storageFreeBytes: typeof payload.systemDetails?.storageFreeBytes === "number" ? payload.systemDetails.storageFreeBytes : current.systemInfo.storageFreeBytes,
-          storageTotalBytes: typeof payload.systemDetails?.storageTotalBytes === "number" ? payload.systemDetails.storageTotalBytes : current.systemInfo.storageTotalBytes,
-          storageUsedPercent: typeof payload.systemDetails?.storageUsedPercent === "number" ? payload.systemDetails.storageUsedPercent : current.systemInfo.storageUsedPercent,
-          storageMount: typeof payload.systemDetails?.storageMount === "string" ? payload.systemDetails.storageMount : current.systemInfo.storageMount,
-          updateStatus: typeof payload.systemDetails?.updateStatus === "string" ? payload.systemDetails.updateStatus : current.systemInfo.updateStatus,
-          temperatureC: typeof payload.systemDetails?.temperatureC === "number" ? payload.systemDetails.temperatureC : current.systemInfo.temperatureC,
-          fanRpm: typeof payload.systemDetails?.fanRpm === "number" ? payload.systemDetails.fanRpm : current.systemInfo.fanRpm,
-          fanMode: typeof payload.systemDetails?.fanMode === "string" ? payload.systemDetails.fanMode : current.systemInfo.fanMode,
-          logLines: typeof payload.systemDetails?.logLines === "number" ? payload.systemDetails.logLines : current.systemInfo.logLines,
-          connectedPortCount: typeof payload.systemDetails?.connectedPortCount === "number" ? payload.systemDetails.connectedPortCount : current.systemInfo.connectedPortCount,
-          totalPortCount: typeof payload.systemDetails?.totalPortCount === "number" ? payload.systemDetails.totalPortCount : current.systemInfo.totalPortCount,
-          restartPending: typeof payload.systemDetails?.restartPending === "boolean" ? payload.systemDetails.restartPending : current.systemInfo.restartPending,
-          aboutProduct: typeof payload.systemDetails?.aboutProduct === "string" ? payload.systemDetails.aboutProduct : current.systemInfo.aboutProduct,
-          aboutCompany: typeof payload.systemDetails?.aboutCompany === "string" ? payload.systemDetails.aboutCompany : current.systemInfo.aboutCompany,
-          aboutWebsite: typeof payload.systemDetails?.aboutWebsite === "string" ? payload.systemDetails.aboutWebsite : current.systemInfo.aboutWebsite,
-          aboutSummary: typeof payload.systemDetails?.aboutSummary === "string" ? payload.systemDetails.aboutSummary : current.systemInfo.aboutSummary,
-          uptimeSeconds: typeof payload.system?.uptimeSeconds === "number" ? payload.system.uptimeSeconds : current.systemInfo.uptimeSeconds,
-          cpuLoad: typeof payload.system?.cpuLoad === "number" ? payload.system.cpuLoad : current.systemInfo.cpuLoad,
-          memoryUsedPercent: typeof payload.system?.memoryUsedPercent === "number" ? payload.system.memoryUsedPercent : current.systemInfo.memoryUsedPercent,
-          processRssBytes: typeof payload.system?.processRssBytes === "number" ? payload.system.processRssBytes : current.systemInfo.processRssBytes
-        }
+        eyeSwap: typeof payload.display?.swapEyes === "boolean" ? payload.display.swapEyes : current.eyeSwap
       };
     });
+  }
+
+  function showToast(message: string) {
+    setHmiState((current) => ({ ...current, toast: message }));
+  }
+
+  function applyCameraPayload(cameraIndex: number, payload: BackendCameraPayload, statusMessage: string) {
+    setHmiState((current) => {
+      const cameras = [...current.cameras] as [CameraControlState, CameraControlState];
+      const camera = cameras[cameraIndex];
+      const controls = payload.controls;
+      cameras[cameraIndex] = {
+        ...camera,
+        zoom: typeof controls?.zoom === "number" ? controls.zoom : camera.zoom,
+        focus: typeof controls?.focus === "number" ? controls.focus : camera.focus,
+        brightness: typeof controls?.brightness === "number" ? controls.brightness : camera.brightness,
+        whiteBalance: typeof controls?.whiteBalance === "string" ? controls.whiteBalance as CameraControlState["whiteBalance"] : camera.whiteBalance,
+        enhance: typeof controls?.enhance === "string" ? controls.enhance as CameraControlState["enhance"] : camera.enhance,
+        frozen: typeof controls?.frozen === "boolean" ? controls.frozen : camera.frozen,
+        rotation: typeof controls?.rotation === "number" ? controls.rotation : camera.rotation,
+        status: statusMessage
+      };
+      return { ...current, cameras, toast: statusMessage };
+    });
+  }
+
+  async function pushCameraPatch(cameraIndex: number, patch: Record<string, unknown>, successMessage: string) {
+    try {
+      const response = await fetch(`/api/camera/${cameraIndex}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch)
+      });
+      const payload = await readJsonResponse(response);
+      if (!response.ok || !isBackendCameraPayload(payload)) {
+        throw new Error(requestErrorMessage(payload, "Camera command failed."));
+      }
+      applyCameraPayload(cameraIndex, payload, successMessage);
+      return true;
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "Camera command failed.");
+      return false;
+    }
+  }
+
+  async function setRecording(active: boolean) {
+    try {
+      const response = await fetch(active ? "/api/recording/start" : "/api/recording/stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}"
+      });
+      const payload = await readJsonResponse(response);
+      if (!response.ok || !isBackendStatePayload(payload)) {
+        throw new Error(requestErrorMessage(payload, active ? "Could not start recording." : "Could not stop recording."));
+      }
+      applyBackendState(payload);
+      showToast(active ? "Recording started" : "Recording stopped");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "Recording command failed.");
+    }
+  }
+
+  async function takeSnapshot(cameraIndex: number) {
+    try {
+      const response = await fetch("/api/recording/snapshot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}"
+      });
+      const payload = await readJsonResponse(response);
+      if (!response.ok) throw new Error(requestErrorMessage(payload, "Snapshot failed."));
+      const side = cameraIndex === 0 ? "Left" : "Right";
+      showToast(`${side} camera snapshot saved`);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "Snapshot failed.");
+    }
   }
 
   async function pushDisplayPatch(patch: Record<string, unknown>) {
@@ -339,91 +326,63 @@ function AppRoot() {
         body: JSON.stringify(patch)
       });
       const payload = await readJsonResponse(response);
-      if (response.ok && isBackendStatePayload(payload)) {
-        applyBackendState(payload);
+      if (!response.ok || !isBackendStatePayload(payload)) {
+        throw new Error(requestErrorMessage(payload, "Display command failed."));
       }
-    } catch {
-    }
-  }
-
-  async function pushDisplayRoutingPatch(connector: string, role: DisplayPortRole) {
-    try {
-      const response = await fetch("/api/system/display-routing", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ connector, role })
-      });
-      const payload = await readJsonResponse(response);
-      if (response.ok && isBackendStatePayload(payload)) {
-        applyBackendState(payload);
-      }
-    } catch {
+      applyBackendState(payload);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "Display command failed.");
     }
   }
 
   const handlers: HmiHandlers = {
     onCameraAction(cameraIndex, action) {
       lightTapFeedback();
-      setHmiState((current) => {
-        const cameras = [...current.cameras] as [CameraControlState, CameraControlState];
-        const camera = cameras[cameraIndex];
-        let nextCamera = camera;
-        let message = "";
-        if (action === "snapshot") {
-          nextCamera = { ...camera, status: "Snapshot saved" };
-          message = `${cameraIndex === 0 ? "Left" : "Right"} camera snapshot saved`;
-        }
-        if (action === "record") {
-          const recording = !camera.recording;
-          nextCamera = { ...camera, recording, status: recording ? "Camera recording" : "Camera record stopped" };
-          message = recording ? "Camera recording started" : "Camera recording stopped";
-        }
-        if (action === "freeze") {
-          const frozen = !camera.frozen;
-          nextCamera = { ...camera, frozen, status: frozen ? "Frame frozen" : "Live stream resumed" };
-          message = nextCamera.status;
-        }
-        if (action === "rotate") {
-          const rotation = (camera.rotation + 90) % 360;
-          nextCamera = { ...camera, rotation, status: `View rotated ${rotation} deg` };
-          message = nextCamera.status;
-        }
-        if (action === "more") {
-          nextCamera = { ...camera, status: "Advanced controls shown" };
-          message = "Quick controls are active";
-        }
-        cameras[cameraIndex] = nextCamera;
-        return { ...current, cameras, toast: message };
-      });
+      const camera = hmiState.cameras[cameraIndex];
+      if (action === "snapshot") {
+        void takeSnapshot(cameraIndex);
+        return;
+      }
+      if (action === "record") {
+        void setRecording(!hmiState.recordingActive);
+        return;
+      }
+      if (action === "freeze") {
+        const frozen = !camera.frozen;
+        void pushCameraPatch(cameraIndex, { frozen }, frozen ? "Frame frozen" : "Live stream resumed");
+        return;
+      }
+      if (action === "rotate") {
+        const rotation = (camera.rotation + 90) % 360;
+        void pushCameraPatch(cameraIndex, { rotation }, `View rotated ${rotation} deg`);
+        return;
+      }
+      showToast("Advanced controls are active");
     },
     onCameraAdjust(cameraIndex, field, delta) {
       lightTapFeedback();
-      if (field === "zoom") {
-        void requestStereoAutoAlign("?action=sample").then(setAutoAlign).catch(() => undefined);
-      }
-      setHmiState((current) => {
-        const cameras = [...current.cameras] as [CameraControlState, CameraControlState];
-        const camera = cameras[cameraIndex];
-        const nextCamera = { ...camera };
-        if (field === "zoom") nextCamera.zoom = Number(clamp(camera.zoom + delta, 1, 6).toFixed(1));
-        if (field === "focus") nextCamera.focus = clamp(camera.focus + delta, -40, 40);
-        if (field === "brightness") nextCamera.brightness = clamp(camera.brightness + delta, 0, 100);
-        nextCamera.status = `${field} set`;
-        cameras[cameraIndex] = nextCamera;
-        return { ...current, cameras, toast: `${field} updated` };
+      const camera = hmiState.cameras[cameraIndex];
+      let value: number;
+      if (field === "zoom") value = Number(clamp(camera.zoom + delta, 1, 6).toFixed(1));
+      else if (field === "focus") value = clamp(camera.focus + delta, -40, 40);
+      else value = clamp(camera.brightness + delta, 0, 100);
+
+      void pushCameraPatch(cameraIndex, { [field]: value }, `${field} updated`).then((ok) => {
+        if (ok && field === "zoom") {
+          void requestStereoAutoAlign("?action=sample").then(setAutoAlign).catch(() => undefined);
+        }
       });
     },
     onCameraCycle(cameraIndex, field) {
       lightTapFeedback();
-      setHmiState((current) => {
-        const cameras = [...current.cameras] as [CameraControlState, CameraControlState];
-        const camera = cameras[cameraIndex];
-        const nextCamera = field === "whiteBalance"
-          ? { ...camera, whiteBalance: cycleValue(whiteBalanceModes, camera.whiteBalance), status: "White balance updated" }
-          : { ...camera, enhance: cycleValue(enhanceModes, camera.enhance), status: "Enhancement updated" };
-        cameras[cameraIndex] = nextCamera;
-        return { ...current, cameras, toast: nextCamera.status };
-      });
+      const camera = hmiState.cameras[cameraIndex];
+      if (field === "whiteBalance") {
+        const whiteBalance = cycleValue(whiteBalanceModes, camera.whiteBalance);
+        void pushCameraPatch(cameraIndex, { whiteBalance }, "White balance updated");
+      } else {
+        const enhance = cycleValue(enhanceModes, camera.enhance);
+        void pushCameraPatch(cameraIndex, { enhance }, "Enhancement updated");
+      }
     },
     onStereoModeChange(mode) {
       lightTapFeedback();
@@ -452,35 +411,25 @@ function AppRoot() {
     onDisplayMode(id, mode) {
       lightTapFeedback();
       setHmiState((current) => {
-        void pushDisplayPatch({ outputId: id, mode });
+        if (id !== "touch-lcd") {
+          void pushDisplayPatch({ mainDisplayMode: mode });
+        }
         return { ...current, displays: { ...current.displays, [id]: { ...current.displays[id], mode, active: true } }, toast: `${current.displays[id].label}: ${mode}` };
       });
     },
-    onDisplayVolume(id, value) {
-      setHmiState((current) => {
-        void pushDisplayPatch({ outputId: id, volume: clamp(value, 0, 125) });
-        return { ...current, displays: { ...current.displays, [id]: { ...current.displays[id], volume: clamp(value, 0, 125), active: true } }, toast: "Volume updated" };
-      });
+    onDisplayValue(id, field, value) {
+      setHmiState((current) => ({ ...current, displays: { ...current.displays, [id]: { ...current.displays[id], [field]: clamp(value, 0, 100), active: true } }, toast: `${field} updated` }));
     },
-    onDisplayMuteToggle(id) {
+    onAudioSourceCycle() {
       lightTapFeedback();
       setHmiState((current) => {
-        const muted = !current.displays[id].muted;
-        void pushDisplayPatch({ outputId: id, muted });
-        return { ...current, displays: { ...current.displays, [id]: { ...current.displays[id], muted, active: true } }, toast: muted ? `${current.displays[id].label} muted` : `${current.displays[id].label} unmuted` };
-      });
-    },
-    onDisplayButtonSoundToggle(id) {
-      lightTapFeedback();
-      setHmiState((current) => {
-        const buttonSoundEnabled = !current.displays[id].buttonSoundEnabled;
-        void pushDisplayPatch({ outputId: id, buttonSoundEnabled });
-        return { ...current, displays: { ...current.displays, [id]: { ...current.displays[id], buttonSoundEnabled, active: true } }, toast: buttonSoundEnabled ? "Button sound on" : "Button sound off" };
+        const audioSource = cycleValue(audioSources, current.audioSource);
+        return { ...current, audioSource, toast: `Audio source: ${audioSource}` };
       });
     },
     onToggleRecording() {
       lightTapFeedback();
-      setHmiState((current) => ({ ...current, recordingActive: !current.recordingActive, toast: current.recordingActive ? "Recording stopped" : "Recording started" }));
+      void setRecording(!hmiState.recordingActive);
     },
     onSaveTargetCycle() {
       lightTapFeedback();
@@ -495,7 +444,12 @@ function AppRoot() {
     },
     onRobotCommand(command) {
       lightTapFeedback();
-      setHmiState((current) => ({ ...current, robotStatus: command === "Home" || command === "Home Position" ? "Homing" : "Moving", robotVector: command, toast: `Robot: ${command}` }));
+      setHmiState((current) => ({
+        ...current,
+        robotStatus: "Adapter required",
+        robotVector: command,
+        toast: "Robot hardware mapping is not configured"
+      }));
     },
     onSelectPedal(side) {
       lightTapFeedback();
@@ -529,20 +483,6 @@ function AppRoot() {
         wifi.openSheet();
       }
       setHmiState((current) => ({ ...current, systemPanel: panel, systemChecks: panel === "Diagnostics" ? current.systemChecks + 1 : current.systemChecks, toast: panel === "Diagnostics" ? "Diagnostics complete" : `${panel} opened` }));
-    },
-    onAssignDisplayPort(connector, role) {
-      lightTapFeedback();
-      setHmiState((current) => ({
-        ...current,
-        displayPorts: current.displayPorts.map((port) => {
-          if (port.connector === connector) return { ...port, role };
-          if (role !== "none" && port.role === role) return { ...port, role: "none" };
-          return port;
-        }),
-        systemPanel: "Display Routing",
-        toast: `Routing ${connector} updated`
-      }));
-      void pushDisplayRoutingPatch(connector, role);
     }
   };
 

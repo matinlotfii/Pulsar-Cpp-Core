@@ -23,15 +23,9 @@ CameraControls sanitize(CameraControls value) {
 }
 
 DisplayControls sanitize(DisplayControls value) {
-  auto sanitizeMode = [](std::string& mode) {
-    if (mode != "2D" && mode != "3D") mode = "3D";
-  };
-  sanitizeMode(value.mainDisplayMode);
-  for (auto& mode : value.outputModes) {
-    sanitizeMode(mode);
+  if (value.mainDisplayMode != "2D" && value.mainDisplayMode != "3D") {
+    value.mainDisplayMode = "3D";
   }
-  value.mainDisplayMode = value.outputModes[0];
-  for (auto& volume : value.outputVolumes) volume = std::clamp(volume, 0, 125);
   value.gapPx = std::clamp(value.gapPx, 0, 200);
   value.stereoAlignX = std::clamp(value.stereoAlignX, -4096.0, 4096.0);
   value.stereoAlignY = std::clamp(value.stereoAlignY, -4096.0, 4096.0);

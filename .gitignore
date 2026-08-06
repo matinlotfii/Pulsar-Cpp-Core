@@ -9,19 +9,3 @@ core/config/pulsar.local.env
 core/config/dev-sync.env
 .dev-sync/
 .codex-tmp/
-*.before-*
-__pycache__/
-*.pyc
-*.backup
-tree.txt
-
-# Server/runtime backups
-.pulsar-backups/
-run-logs/
-pulsar-*-diagnostics-*.tar.gz
-pulsar-camera-render-touch-*.tar.gz
-/pulsar-root-repair.sh
-/pulsar-*-diagnose.sh
-/pulsar-*-diagnostics-*.tar.gz
-/pulsar-*-report-*.txt
-/pulsar-two-xreal-report-*.txt

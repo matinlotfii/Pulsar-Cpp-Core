@@ -7,11 +7,10 @@ export DEBIAN_FRONTEND=noninteractive
 log "Installing the minimal Ubuntu Server runtime and C++ build packages..."
 apt-get update
 apt-get install -y --no-install-recommends \
-  build-essential cmake ca-certificates curl libjpeg-dev libsdl2-2.0-0 \
-  nodejs node-typescript xserver-xorg-core xserver-xorg-video-all xinit \
+  build-essential cmake ninja-build pkg-config ca-certificates curl git rsync openssh-client \
+  libjpeg-dev libsdl2-dev libsdl2-2.0-0 nodejs npm node-typescript xserver-xorg-core xserver-xorg-video-all xinit \
   xserver-xorg-input-libinput openbox x11-xserver-utils xinput unclutter-xfixes ffmpeg usbutils udev \
-  network-manager iw rfkill policykit-1 inotify-tools \
-  pulseaudio pulseaudio-utils alsa-utils libasound2-plugins
+  network-manager iw rfkill policykit-1 inotify-tools
 
 if ! find_browser >/dev/null 2>&1; then
   log "No kiosk browser found; installing Google Chrome Stable."

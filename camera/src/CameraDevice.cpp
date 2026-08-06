@@ -23,6 +23,7 @@ namespace pulsar::camera {
 namespace {
 
 constexpr DX_BAYER_CONVERT_TYPE kRealtimeConvertMode = RAW2RGB_NEIGHBOUR;
+constexpr uint32_t kAcquisitionBufferCount = 3;
 
 std::mutex gSdkMutex;
 
@@ -169,45 +170,6 @@ bool controlsEqual(const core::CameraControls& a, const core::CameraControls& b)
          a.whiteBalance == b.whiteBalance && a.enhance == b.enhance;
 }
 
-void setAcquisitionFrameRateEnabled(GX_DEV_HANDLE device, bool enabled) {
-  if (!setEnumOneOf(device, "AcquisitionFrameRateMode", {enabled ? "On" : "Off"})) {
-    setEnumValue(device, "AcquisitionFrameRateMode", enabled ? 1 : 0);
-  }
-}
-
-void setExposureAutoEnabled(GX_DEV_HANDLE device, bool enabled) {
-  if (enabled) {
-    if (!setEnumOneOf(device, "ExposureAuto", {"Continuous", "Once", "On"})) {
-      setEnumValue(device, "ExposureAuto", 1);
-    }
-    return;
-  }
-
-  if (!setEnumOneOf(device, "ExposureAuto", {"Off"})) {
-    setEnumValue(device, "ExposureAuto", 0);
-  }
-}
-
-void setBalanceWhiteAutoEnabled(GX_DEV_HANDLE device, bool enabled) {
-  if (enabled) {
-    if (!setEnumOneOf(device, "BalanceWhiteAuto", {"Continuous", "Once", "On"})) {
-      setEnumValue(device, "BalanceWhiteAuto", 1);
-    }
-    return;
-  }
-
-  if (!setEnumOneOf(device, "BalanceWhiteAuto", {"Off"})) {
-    setEnumValue(device, "BalanceWhiteAuto", 0);
-  }
-}
-
-void applyLowLatencyAcquisitionSetup(GX_DEV_HANDLE device, int targetFps) {
-  setEnum(device, "AcquisitionMode", "Continuous");
-  setEnum(device, "TriggerMode", "Off");
-  setAcquisitionFrameRateEnabled(device, true);
-  setFloat(device, "AcquisitionFrameRate", static_cast<double>(std::max(targetFps, 1)));
-}
-
 std::string lowerAscii(std::string value) {
   std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
     return static_cast<char>(std::tolower(ch));
@@ -217,7 +179,9 @@ std::string lowerAscii(std::string value) {
 
 bool gpuRequestedForSlot(uint32_t slot) {
   const char* raw = std::getenv("PULSAR_GPU_PIPELINE");
-  if (raw == nullptr) return false;
+  // CUDA is the production path. CPU fallback remains automatic when this
+  // binary was built without CUDA or initialization fails.
+  if (raw == nullptr) return true;
 
   const std::string mode = lowerAscii(raw);
   if (mode == "1" || mode == "on" || mode == "true" || mode == "both") return true;
@@ -238,6 +202,19 @@ std::pair<uint32_t, uint32_t> fitOutputSize(
   return {
       std::max<uint32_t>(1, static_cast<uint32_t>(width * scale)),
       std::max<uint32_t>(1, static_cast<uint32_t>(height * scale))};
+}
+
+std::shared_ptr<const PixelBuffer> copyPixelBuffer(
+    const uint8_t* data,
+    std::size_t bytes) {
+  if (data == nullptr || bytes == 0) return {};
+  auto storage = std::shared_ptr<uint8_t>(
+      new uint8_t[bytes], std::default_delete<uint8_t[]>());
+  std::memcpy(storage.get(), data, bytes);
+  auto buffer = std::make_shared<PixelBuffer>();
+  buffer->storage = std::move(storage);
+  buffer->byteCount = bytes;
+  return buffer;
 }
 
 bool gpuPatternFor(
@@ -375,7 +352,6 @@ void CameraDevice::loop() {
   // Low-latency policy: dequeue every frame currently waiting in the SDK,
   // keep only the newest successful frame, return all SDK buffers immediately,
   // then process the private raw copy. This prevents a growing backlog.
-  constexpr uint32_t kAcquisitionBufferCount = 4;
   std::array<PGX_FRAME_BUFFER, kAcquisitionBufferCount> readyBuffers{};
   std::vector<uint8_t> rawCopy;
   GX_FRAME_BUFFER copiedFrame{};
@@ -508,8 +484,7 @@ void CameraDevice::loop() {
         const auto [outputWidth, outputHeight] =
             fitOutputSize(sourceWidth, sourceHeight, maxWidth_, maxHeight_);
         std::string gpuError;
-        const uint8_t* gpuOutput = nullptr;
-        std::size_t gpuOutputBytes = 0;
+        std::shared_ptr<const PixelBuffer> gpuOutput;
 
         if (gpuInputStaged &&
             gpuPatternFor(copiedFrame.nPixelFormat, colorFilter_, pattern) &&
@@ -520,7 +495,6 @@ void CameraDevice::loop() {
                 outputWidth,
                 outputHeight,
                 gpuOutput,
-                gpuOutputBytes,
                 gpuTimings,
                 gpuError)) {
           convertEnd = std::chrono::steady_clock::now();
@@ -528,8 +502,7 @@ void CameraDevice::loop() {
           publish(
               outputWidth,
               outputHeight,
-              gpuOutput,
-              gpuOutputBytes,
+              std::move(gpuOutput),
               true,
               timing);
           publishEnd = std::chrono::steady_clock::now();
@@ -542,10 +515,19 @@ void CameraDevice::loop() {
           gpuTotalMsSum += gpuTimings.totalMs;
           gpuTotalMsMax = std::max(gpuTotalMsMax, gpuTimings.totalMs);
         } else {
-          gpuDisabledAfterFailure_ = true;
-          std::cerr << label_ << ": GPU pipeline disabled; CPU fallback active: "
-                    << (gpuError.empty() ? "unsupported Bayer pattern" : gpuError)
-                    << '\n';
+          const bool outputPoolBusy =
+              gpuError == "all CUDA output buffers are still in use";
+          if (outputPoolBusy) {
+            // A slow UI/recorder consumer must not permanently disable CUDA.
+            // Drop this stale frame and retry the GPU path on the next capture.
+            std::cerr << label_
+                      << ": CUDA output pool busy; dropping one frame\n";
+          } else {
+            gpuDisabledAfterFailure_ = true;
+            std::cerr << label_ << ": GPU pipeline disabled; CPU fallback active: "
+                      << (gpuError.empty() ? "unsupported Bayer pattern" : gpuError)
+                      << '\n';
+          }
         }
       }
 
@@ -788,17 +770,12 @@ bool CameraDevice::connect() {
         slot_, std::chrono::milliseconds(timeoutMs));
   }
 
-  const bool parallelStreamOn =
-      softwareSync && pairedStart &&
-      envEnabled("PULSAR_PARALLEL_STREAM_ON", false);
-
   const auto streamOnStart = std::chrono::steady_clock::now();
   GX_STATUS streamStatus = GX_STATUS_ERROR;
-  if (parallelStreamOn) {
-    // Both cameras are separate devices and have already passed the shared
-    // start barrier. Discovery, configuration and shutdown remain serialized.
-    streamStatus = GXStreamOn(device_);
-  } else {
+  {
+    // Keep SDK calls serialized for safety. Because both cameras are already
+    // configured and released from the same gate, the two StreamOn calls now
+    // run back-to-back instead of being separated by complete camera/GPU init.
     std::lock_guard<std::mutex> sdkLock(gSdkMutex);
     streamStatus = GXStreamOn(device_);
   }
@@ -814,7 +791,6 @@ bool CameraDevice::connect() {
   std::cerr << label_
             << ": software-start-sync="
             << (softwareSync ? (pairedStart ? "paired" : "fallback") : "off")
-            << " stream-on-mode=" << (parallelStreamOn ? "parallel" : "serialized")
             << " stream-on-call-ms="
             << std::chrono::duration<double, std::milli>(streamOnEnd - streamOnStart).count()
             << " stream-on-host-ns=" << steadyNs(streamOnEnd) << '\n';
@@ -901,113 +877,83 @@ bool CameraDevice::configure() {
     }
   }
 
-  // PULSAR_REFERENCE_PROFILE_AUTHORITY_V2
-  // The imported GalaxyView file owns all sensor and image parameters.
-  // Runtime controls are allowed only when no profile was imported.
   if (!profileImported_) {
     if (setEnumOneOf(device_, "UserSetSelector", {"Default", "UserSet0"})) {
       setCommand(device_, "UserSetLoad");
     }
-    applyLowLatencyAcquisitionSetup(device_, targetFps_);
 
+    setEnum(device_, "AcquisitionMode", "Continuous");
+    setEnum(device_, "TriggerMode", "Off");
     setEnumOneOf(device_, "RegionSelector", {"Region0", "Region1"});
     setEnum(device_, "RegionMode", "Off");
 
-    GX_INT_VALUE sensorWidthMax{};
-    GX_INT_VALUE sensorHeightMax{};
-    const bool haveSensorWidth = getInt(device_, "WidthMax", sensorWidthMax);
-    const bool haveSensorHeight = getInt(device_, "HeightMax", sensorHeightMax);
-    int sensorScale = std::clamp(sensorScale_, 1, 4);
-
-    if (haveSensorWidth && haveSensorHeight) {
-      const double widthRatio =
-          static_cast<double>(sensorWidthMax.nCurValue) / std::max(1u, maxWidth_);
-      const double heightRatio =
-          static_cast<double>(sensorHeightMax.nCurValue) / std::max(1u, maxHeight_);
-      const int recommendedScale = std::clamp(
-          static_cast<int>(std::ceil(std::max({1.0, widthRatio, heightRatio}))),
-          1,
-          4);
-      sensorScale = std::max(sensorScale, recommendedScale);
-    }
-
-    configuredSensorScale_ = sensorScale;
+    // Configure the sensor/transport resolution before streaming. This is a
+    // real camera ROI, not a post-capture resize, so USB never carries the
+    // unused 12 MP frame when the target is 1920x1080.
+    configuredSensorScale_ = std::clamp(sensorScale_, 1, 4);
     setEnumOneOf(device_, "BinningHorizontalMode", {"Average", "Sum"});
     setEnumOneOf(device_, "BinningVerticalMode", {"Average", "Sum"});
-    setInt(device_, "BinningHorizontal", sensorScale);
-    setInt(device_, "BinningVertical", sensorScale);
+    setInt(device_, "BinningHorizontal", configuredSensorScale_);
+    setInt(device_, "BinningVertical", configuredSensorScale_);
     setInt(device_, "DecimationHorizontal", 1);
     setInt(device_, "DecimationVertical", 1);
     setInt(device_, "SensorDecimationHorizontal", 1);
     setInt(device_, "SensorDecimationVertical", 1);
     setBool(device_, "CenterX", false);
     setBool(device_, "CenterY", false);
+    setInt(device_, "OffsetX", 0);
+    setInt(device_, "OffsetY", 0);
 
     GX_INT_VALUE widthMax{};
     GX_INT_VALUE heightMax{};
-
     if (getInt(device_, "WidthMax", widthMax)) {
-      setInt(device_, "Width", widthMax.nCurValue);
+      setInt(device_, "Width", std::min<int64_t>(
+          static_cast<int64_t>(maxWidth_), widthMax.nCurValue));
     }
     if (getInt(device_, "HeightMax", heightMax)) {
-      setInt(device_, "Height", heightMax.nCurValue);
+      setInt(device_, "Height", std::min<int64_t>(
+          static_cast<int64_t>(maxHeight_), heightMax.nCurValue));
     }
 
-    setInt(device_, "OffsetX", 0);
-    setInt(device_, "OffsetY", 0);
+    // Center the ROI after its dimensions are set; Offset range depends on
+    // the current Width/Height on Galaxy cameras.
+    GX_INT_VALUE offsetX{};
+    GX_INT_VALUE offsetY{};
+    if (getInt(device_, "OffsetX", offsetX)) setInt(device_, "OffsetX", offsetX.nMax / 2);
+    if (getInt(device_, "OffsetY", offsetY)) setInt(device_, "OffsetY", offsetY.nMax / 2);
+
+    setEnumValue(device_, "AcquisitionFrameRateMode", 1);
+    setFloat(device_, "AcquisitionFrameRate", static_cast<double>(targetFps_));
+
+    setInt(device_, "StreamTransferSize", 64 * 1024);
+    setInt(device_, "StreamTransferNumberUrb", 32);
+    setBool(device_, "FrameStoreCoverActive", true);
+    setEnum(device_, "CoverFrameStoreMode", "On");
     applyControls(controls_(), true);
   }
 
-  // Keep only host-side latency optimizations outside profile authority.
-  // These do not alter exposure, gain, color, LUT, ROI or sensor geometry.
-  GX_DS_HANDLE streamHandle = nullptr;
-  const bool haveStreamHandle =
-      GXGetDataStreamHandleFromDev(device_, 0, &streamHandle) ==
-          GX_STATUS_SUCCESS &&
-      streamHandle != nullptr;
-
-  GX_PORT_HANDLE streamPort = haveStreamHandle
-      ? static_cast<GX_PORT_HANDLE>(streamHandle)
-      : static_cast<GX_PORT_HANDLE>(device_);
-
-  // PULSAR_REFERENCE_USB_TRANSPORT_V4
-  // Match the known-good ZIP transport for full 4024x3036 Bayer frames.
-  // These are host/USB stream parameters and do not alter image pixels.
-  setInt(streamPort, "StreamTransferSize", 1024 * 1024);
-  setInt(streamPort, "StreamTransferNumberUrb", 200);
-  setInt(streamPort, "AcquisitionBufferCachePrec", 40);
-  setBool(device_, "FrameStoreCoverActive", true);
-  setEnum(device_, "CoverFrameStoreMode", "On");
-
+  // Low-latency stream policy. These are host/transport settings only and
+  // intentionally override the persistence file's OldestFirst queue policy.
   const char* streamBufferMode = "unchanged";
-
-  if (setEnum(streamPort, "StreamBufferHandlingMode", "NewestOnly")) {
+  if (setEnum(device_, "StreamBufferHandlingMode", "NewestOnly")) {
     streamBufferMode = "NewestOnly";
-  } else if (
-      setEnum(streamPort, "StreamBufferHandlingMode", "OldestFirstOverwrite")) {
+  } else if (setEnum(device_, "StreamBufferHandlingMode", "OldestFirstOverwrite")) {
     streamBufferMode = "OldestFirstOverwrite";
   }
 
-  const uint64_t kAcquisitionBufferCount = static_cast<uint64_t>(
-      envInt("PULSAR_ACQUISITION_BUFFER_COUNT", 2, 2, 8));
-
-  if (GXSetAcqusitionBufferNumber(device_, kAcquisitionBufferCount) !=
-      GX_STATUS_SUCCESS) {
-    std::cerr << label_
-              << ": warning: could not set acquisition buffer count\n";
+  if (GXSetAcqusitionBufferNumber(device_, kAcquisitionBufferCount) != GX_STATUS_SUCCESS) {
+    std::cerr << label_ << ": warning: could not set acquisition buffer count\n";
   }
-
   std::cerr << label_ << ": low-latency stream-buffer-mode="
             << streamBufferMode << " acquisition-buffers="
             << kAcquisitionBufferCount << '\n';
 
+  // Read the Bayer filter after profile import, because the profile may
+  // change PixelFormat or related color settings.
   colorFilter_ = GX_COLOR_FILTER_NONE;
-
   if (available(device_, "PixelColorFilter")) {
     GX_ENUM_VALUE value{};
-
-    if (GXGetEnumValue(device_, "PixelColorFilter", &value) ==
-        GX_STATUS_SUCCESS) {
+    if (GXGetEnumValue(device_, "PixelColorFilter", &value) == GX_STATUS_SUCCESS) {
       colorFilter_ = value.stCurValue.nCurValue;
     }
   }
@@ -1032,93 +978,74 @@ void CameraDevice::close() {
 }
 
 void CameraDevice::applyControls(const core::CameraControls& controls, bool force) {
-  // PULSAR_REFERENCE_APPLY_GUARD_V2
-  // The imported profile is the single source of truth for exposure, gain,
-  // black level, white balance, gamma, LUT and sensor geometry.
+  // An explicitly enabled GalaxyView profile remains authoritative. The
+  // low-latency default disables profiles so ROI/FPS/exposure come from env/UI.
   if (profileImported_) return;
 
   if (device_ == nullptr ||
-      (!force && controlsApplied_ &&
-       controlsEqual(controls, appliedControls_))) {
+      (!force && controlsApplied_ && controlsEqual(controls, appliedControls_))) {
     return;
   }
 
-  // ============================================================
-  // Fixed camera profile for both Daheng cameras
-  // ============================================================
-
-  // ExposureMode = Timed
   setEnum(device_, "ExposureMode", "Timed");
+  const double frameBudgetUs = 1'000'000.0 / static_cast<double>(std::max(1, targetFps_));
+  const double maximumExposureUs = std::max(40.0, frameBudgetUs - 1'500.0);
+  setFloat(device_, "AutoExposureTimeMin", 40.0);
+  setFloat(device_, "AutoExposureTimeMax", maximumExposureUs);
 
-  // Keep the sensor in the requested real-time operating point even when a
-  // GalaxyView profile has been imported.
-  applyLowLatencyAcquisitionSetup(device_, targetFps_);
+  if (controls.autoExposure) {
+    if (!setEnumOneOf(device_, "ExposureAuto", {"Continuous", "Once"})) {
+      setEnumValue(device_, "ExposureAuto", 1);
+    }
+  } else {
+    if (!setEnum(device_, "ExposureAuto", "Off")) setEnumValue(device_, "ExposureAuto", 0);
+    setFloat(device_, "ExposureTime", std::min(controls.exposureUs, maximumExposureUs));
+  }
 
-  // ExposureAuto = controls.autoExposure
-  setExposureAutoEnabled(device_, controls.autoExposure);
-
-  // Gain must be manual; otherwise the requested gain may be overwritten.
   setEnum(device_, "GainAuto", "Off");
   setEnumOneOf(device_, "GainSelector", {"AnalogAll", "All"});
-
-  // Gain = controls.gainDb
   setFloat(device_, "Gain", controls.gainDb);
 
-  // BlackLevel must be manual.
-  setEnumValue(device_, "BlackLevelAuto", 0);
-
-  // BlackLevel = 1
-  setFloat(device_, "BlackLevel", 1.0);
-
-  // ExposureTime = controls.exposureUs microseconds
-  if (!controls.autoExposure) {
-    setFloat(device_, "ExposureTime", controls.exposureUs);
+  // Prefer a real brightness node. If this camera exposes only BlackLevel, use
+  // a restrained mapping so the UI control remains functional without crushing
+  // highlights or blacks.
+  if (!setFloat(device_, "Brightness", static_cast<double>(controls.brightness))) {
+    setEnumValue(device_, "BlackLevelAuto", 0);
+    const double blackLevel = 1.0 +
+        (static_cast<double>(controls.brightness) - 60.0) * 0.08;
+    setFloat(device_, "BlackLevel", std::max(0.0, blackLevel));
   }
 
-  // AutoExposureTimeMin = 8 microseconds
-  setFloat(device_, "AutoExposureTimeMin", 8.0);
+  if (controls.whiteBalance == "Auto") {
+    if (!setEnumOneOf(device_, "BalanceWhiteAuto", {"Continuous", "Once"})) {
+      setEnumValue(device_, "BalanceWhiteAuto", 1);
+    }
+  } else {
+    if (!setEnum(device_, "BalanceWhiteAuto", "Off")) setEnumValue(device_, "BalanceWhiteAuto", 0);
+    double red = whiteBalanceRed_;
+    double green = whiteBalanceGreen_;
+    double blue = whiteBalanceBlue_;
+    if (controls.whiteBalance == "Warm") {
+      red *= 1.12;
+      blue *= 0.88;
+    } else if (controls.whiteBalance == "Cool") {
+      red *= 0.88;
+      blue *= 1.12;
+    }
+    setBalanceRatio(device_, "Red", red);
+    setBalanceRatio(device_, "Green", green);
+    setBalanceRatio(device_, "Blue", blue);
+  }
 
-  // AutoExposureTimeMax = 1000000 microseconds
-  setFloat(device_, "AutoExposureTimeMax", 1000000.0);
-
-
-  // LightSourcePreset = 3
-  setEnumValue(device_, "LightSourcePreset", 3);
-
-  // BalanceWhiteAuto = 0 (Off)
-  setBalanceWhiteAutoEnabled(device_, false);
-
-  /*
-   * BalanceRatio is selector-dependent.
-   * Apply the requested BalanceRatio = 2 only to Red.
-   * Do not force Green and Blue to 2, because doing so can
-   * override the color balance associated with LightSourcePreset.
-   */
-  setBalanceRatio(device_, "Red", 2.0);
-
-  // Keep the existing image enhancement behavior.
-  const bool standardEnhance = controls.enhance == "Low";
-
-  setBool(device_, "GammaEnable", !standardEnhance);
-
-  if (!standardEnhance) {
+  const bool lowEnhance = controls.enhance == "Low";
+  setBool(device_, "GammaEnable", !lowEnhance);
+  if (!lowEnhance) {
     setEnum(device_, "GammaMode", "User");
-    setFloat(
-        device_,
-        "Gamma",
-        controls.enhance == "High" ? 0.92 : 0.98);
+    setFloat(device_, "Gamma", controls.enhance == "High" ? 0.92 : 0.98);
   }
-
-  setEnum(
-      device_,
-      "SharpnessMode",
-      standardEnhance ? "Off" : "On");
-
-  if (!standardEnhance) {
-    setFloat(
-        device_,
-        "Sharpness",
-        controls.enhance == "High" ? 1.0 : 0.5);
+  setEnum(device_, "SharpnessMode", lowEnhance ? "Off" : "On");
+  if (!lowEnhance) {
+    setFloat(device_, "Sharpness", controls.enhance == "High" ? 1.0 : 0.5);
   }
 
   appliedControls_ = controls;
@@ -1160,8 +1087,12 @@ bool CameraDevice::convert(PGX_FRAME_BUFFER frame, std::vector<uint8_t>& rgb) {
   return false;
 }
 
-void CameraDevice::publish(uint32_t width, uint32_t height, const std::vector<uint8_t>& rgb, bool online,
-                           FrameTiming timing) {
+void CameraDevice::publish(
+    uint32_t width,
+    uint32_t height,
+    const std::vector<uint8_t>& rgb,
+    bool online,
+    FrameTiming timing) {
   publish(width, height, rgb.data(), rgb.size(), online, timing);
 }
 
@@ -1172,35 +1103,53 @@ void CameraDevice::publish(
     std::size_t rgbBytes,
     bool online,
     FrameTiming timing) {
+  publish(width, height, copyPixelBuffer(rgb, rgbBytes), online, timing);
+}
+
+void CameraDevice::publish(
+    uint32_t width,
+    uint32_t height,
+    std::shared_ptr<const PixelBuffer> rgb,
+    bool online,
+    FrameTiming timing) {
   const std::size_t requiredBytes =
       static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 3u;
-  if (rgb == nullptr || rgbBytes < requiredBytes) {
+  if (!rgb || rgb->data() == nullptr || rgb->size() < requiredBytes) {
     fail("publish received an incomplete RGB frame");
     return;
   }
 
-  const double scale = std::min({1.0, static_cast<double>(maxWidth_) / width, static_cast<double>(maxHeight_) / height});
-  const uint32_t outWidth = std::max<uint32_t>(1, static_cast<uint32_t>(width * scale));
-  const uint32_t outHeight = std::max<uint32_t>(1, static_cast<uint32_t>(height * scale));
-  const uint8_t* data = rgb;
+  const double scale = std::min({
+      1.0,
+      static_cast<double>(maxWidth_) / static_cast<double>(width),
+      static_cast<double>(maxHeight_) / static_cast<double>(height)});
+  const uint32_t outWidth =
+      std::max<uint32_t>(1, static_cast<uint32_t>(width * scale));
+  const uint32_t outHeight =
+      std::max<uint32_t>(1, static_cast<uint32_t>(height * scale));
+
+  std::shared_ptr<const PixelBuffer> publishedRgb = std::move(rgb);
   if (outWidth != width || outHeight != height) {
-    resizeRgbBilinearInto(rgb, width, height, outWidth, outHeight, resized_);
-    data = resized_.data();
+    resizeRgbBilinearInto(
+        publishedRgb->data(), width, height, outWidth, outHeight, resized_);
+    publishedRgb = copyPixelBuffer(resized_.data(), resized_.size());
   }
-  auto rgbCopy = std::make_shared<std::vector<uint8_t>>(data, data + static_cast<size_t>(outWidth) * outHeight * 3u);
+
   std::shared_ptr<const std::vector<uint8_t>> currentJpeg;
   {
     std::lock_guard<std::mutex> lock(previewMutex_);
     currentJpeg = lastJpeg_;
   }
+
   auto frame = std::make_shared<Frame>();
   frame->width = outWidth;
   frame->height = outHeight;
   timing.hostPublishDoneNs = nowNs();
   frame->timestampNs = timing.hostPublishDoneNs;
   frame->timing = timing;
-  frame->rgb = std::move(rgbCopy);
+  frame->rgb = std::move(publishedRgb);
   frame->jpeg = std::move(currentJpeg);
+
   {
     std::lock_guard<std::mutex> lock(mutex_);
     frame->id = status_.frame ? status_.frame->id + 1u : 1u;

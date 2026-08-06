@@ -1,5 +1,7 @@
 #pragma once
 
+#include "pulsar/camera/Frame.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -50,8 +52,7 @@ class GpuBayerPipeline {
       BayerPattern pattern,
       uint32_t outputWidth,
       uint32_t outputHeight,
-      const uint8_t*& outputRgb,
-      std::size_t& outputBytes,
+      std::shared_ptr<const PixelBuffer>& outputRgb,
       GpuBayerTimings& timings,
       std::string& error);
 

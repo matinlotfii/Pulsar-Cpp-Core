@@ -1,30 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# PULSAR_PERSISTENT_RUN_LOG_V1
-# Keep every run transcript locally. Runtime logs are intentionally excluded
-# from Git; only project source/configuration changes are committed and pushed.
-if [[ "${PULSAR_RUN_LOGGING_ACTIVE:-0}" != "1" ]]; then
-  early_root="$(cd "$(dirname "$0")" && pwd)"
-  run_log_dir="$early_root/run-logs"
-  mkdir -p "$run_log_dir"
-  run_log_file="$run_log_dir/run-$(date +%Y%m%d-%H%M%S).log"
-  export PULSAR_RUN_LOGGING_ACTIVE=1
-  export PULSAR_RUN_LOG_FILE="$run_log_file"
-  exec > >(tee -a "$run_log_file") 2>&1
-  printf 'Pulsar run log: %s\n' "$run_log_file"
-fi
 # =============================================================================
 # Pulsar professional runner
 #
-# Default ./run.sh workflow:
-#   1) Ask why this run is being made.
-#   2) Stage every non-ignored project change.
-#   3) Create a timestamped Git commit on every run, even with no file changes.
-#   4) Create an annotated backup tag.
-#   5) Create verified local Git bundle + source archive backups.
-#   6) Push the branch and this run's tag atomically to GitHub over SSH port 443.
-#   7) Only after a successful GitHub push, sync/start Pulsar on 192.168.1.123.
+# Default ./run.sh workflow on the personal workstation:
+#   1) Do not compile or start Pulsar locally.
+#   2) Verify SSH access to the project computer.
+#   3) Commit, back up, and push all source changes to GitHub.
+#   4) Sync the committed source to the project computer.
+#   5) Build UI + CUDA/C++ and restart pulsar-kiosk.service remotely.
 #
 # The GitHub repository and the Pulsar runtime device are intentionally separate.
 # =============================================================================
@@ -54,7 +39,11 @@ RUN_GIT_MAX_FILE_MB="${RUN_GIT_MAX_FILE_MB:-95}"
 
 # Optional non-interactive commit reason:
 #   RUN_GIT_COMMIT_MESSAGE="Reason" ./run.sh
-RUN_GIT_COMMIT_MESSAGE="${RUN_GIT_COMMIT_MESSAGE:-}"
+RUN_GIT_COMMIT_MESSAGE="${RUN_GIT_COMMIT_MESSAGE:-Verified low-latency build and deployment}"
+RUN_GIT_PROMPT="${RUN_GIT_PROMPT:-0}"
+RUN_VERIFY_SMOKE="${RUN_VERIFY_SMOKE:-1}"
+RUN_REMOTE_PREFLIGHT="${RUN_REMOTE_PREFLIGHT:-1}"
+RUN_REQUIRE_CUDA="${RUN_REQUIRE_CUDA:-1}"
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 source "$ROOT/core/scripts/common.sh"
@@ -110,6 +99,12 @@ ensure_run_sync_target() {
   upsert_sync_config_value "$config" "SYNC_REMOTE_PORT" "$RUN_SYNC_REMOTE_PORT"
   upsert_sync_config_value "$config" "SYNC_REMOTE_DIR" "$RUN_SYNC_REMOTE_DIR"
   upsert_sync_config_value "$config" "SYNC_REMOTE_GIT_DIR" "$RUN_SYNC_REMOTE_GIT_DIR"
+  upsert_sync_config_value "$config" "SYNC_AUTO_REMOTE" "1"
+  upsert_sync_config_value "$config" "SYNC_BUILD_UI_LOCALLY" "0"
+  upsert_sync_config_value "$config" "SYNC_REMOTE_BUILD_UI_ON_SYNC" "1"
+  upsert_sync_config_value "$config" "SYNC_REMOTE_BUILD_ON_SYNC" "1"
+  upsert_sync_config_value "$config" "SYNC_REMOTE_RESTART_ON_SYNC" "1"
+  upsert_sync_config_value "$config" "SYNC_INCLUDE_LOCAL_CONFIG" "1"
 }
 
 load_sync_config() {
@@ -154,13 +149,62 @@ ui_needs_build() {
     grep -q .
 }
 
+verify_local_release() {
+  echo
+  echo "========== LOCAL BUILD AND VERIFICATION =========="
+
+  if ! needs_dependencies; then
+    "$ROOT/core/scripts/install-dependencies.sh"
+  fi
+
+  if ui_needs_build; then
+    "$ROOT/core/scripts/build-ui.sh"
+  fi
+
+  PULSAR_REQUIRE_CUDA="$RUN_REQUIRE_CUDA" "$ROOT/core/scripts/build-cpp.sh"
+
+  if [[ "$RUN_VERIFY_SMOKE" == "1" ]]; then
+    PULSAR_SMOKE_SKIP_BUILD=1 "$ROOT/core/scripts/smoke-test.sh"
+  else
+    warn "Smoke test skipped because RUN_VERIFY_SMOKE=$RUN_VERIFY_SMOKE"
+  fi
+
+  log "Local release build verified before Git push/deployment."
+}
+
+preflight_remote_target() {
+  remote_start_requested || return 0
+  [[ "$RUN_REMOTE_PREFLIGHT" == "1" ]] || return 0
+
+  require_command ssh
+  echo
+  echo "========== REMOTE PREFLIGHT =========="
+
+  local remote_check
+  printf -v remote_check 'mkdir -p %q && test -w %q' \
+    "$SYNC_REMOTE_DIR" "$SYNC_REMOTE_DIR"
+
+  ssh -F /dev/null \
+    -p "$SYNC_REMOTE_PORT" \
+    -o StrictHostKeyChecking=accept-new \
+    -o BatchMode=yes \
+    -o ConnectTimeout=10 \
+    "${SYNC_REMOTE_USER}@${SYNC_REMOTE_HOST}" \
+    "bash -lc $(printf '%q' "$remote_check")"
+  if [[ "${SYNC_REMOTE_RESTART_ON_SYNC:-1}" == "1" ]]; then
+    log "Remote target is reachable, writable, and ready for non-interactive service control: ${SYNC_REMOTE_USER}@${SYNC_REMOTE_HOST}:${SYNC_REMOTE_DIR}"
+  else
+    log "Remote target is reachable and writable: ${SYNC_REMOTE_USER}@${SYNC_REMOTE_HOST}:${SYNC_REMOTE_DIR}"
+  fi
+}
+
 ensure_git_repository() {
   require_command git
 
-  git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
-    echo "ERROR: $ROOT is not a Git working tree." >&2
-    return 1
-  }
+  if ! git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    log "Initializing Git metadata for this extracted project."
+    git -C "$ROOT" init -b main
+  fi
 
   local git_dir
   git_dir="$(git -C "$ROOT" rev-parse --git-dir)"
@@ -221,31 +265,26 @@ RUN_TAG_NAME_RESULT=""
 
 ask_run_reason() {
   local reason="$RUN_GIT_COMMIT_MESSAGE"
+  local prompted_reason=""
 
   echo
   echo "========== RUN REASON =========="
 
-  if [[ -z "$reason" ]]; then
-    if [[ -r /dev/tty && -w /dev/tty ]]; then
-      while [[ -z "${reason//[[:space:]]/}" ]]; do
-        read -r -p "Why are you running Pulsar? Commit message: " reason </dev/tty
-
-        if [[ -z "${reason//[[:space:]]/}" ]]; then
-          echo "Commit message cannot be empty."
-        fi
-      done
-    else
-      echo "ERROR: A commit message is required." >&2
-      echo 'Use: RUN_GIT_COMMIT_MESSAGE="Reason for this run" ./run.sh' >&2
-      return 1
+  if [[ "$RUN_GIT_PROMPT" == "1" && -r /dev/tty && -w /dev/tty ]]; then
+    read -r -p "Run checkpoint message [$reason]: " prompted_reason </dev/tty || true
+    if [[ -n "${prompted_reason//[[:space:]]/}" ]]; then
+      reason="$prompted_reason"
     fi
   fi
 
-  # Keep the subject line readable and prevent embedded newlines.
+  if [[ -z "${reason//[[:space:]]/}" ]]; then
+    reason="Verified low-latency build and deployment"
+  fi
+
   reason="${reason//$'\r'/ }"
   reason="${reason//$'\n'/ }"
-
   RUN_REASON_RESULT="$reason"
+  log "Checkpoint message: $reason"
 }
 
 validate_staged_file_sizes() {
@@ -283,6 +322,13 @@ fetch_and_validate_github() {
   GIT_SSH_COMMAND="$RUN_GIT_SSH_COMMAND" \
     git -C "$ROOT" fetch "$RUN_GIT_REMOTE" --prune
 
+  if ! git -C "$ROOT" rev-parse --verify HEAD >/dev/null 2>&1 && \
+      git -C "$ROOT" show-ref --verify --quiet "refs/remotes/$RUN_GIT_REMOTE/$branch"; then
+    # Attach a freshly extracted ZIP to existing remote history without
+    # replacing any working-tree file.
+    git -C "$ROOT" reset --mixed "$RUN_GIT_REMOTE/$branch"
+  fi
+
   if git -C "$ROOT" show-ref --verify --quiet \
       "refs/remotes/$RUN_GIT_REMOTE/$branch"; then
 
@@ -304,17 +350,6 @@ create_run_commit_and_tag() {
   local branch="$4"
 
   echo
-
-# PULSAR_LOCAL_UI_BUILD_BEGIN
-# Source changes are built locally before Git staging and deployment.
-# Remote builds receive PULSAR_USE_PREBUILT_UI=1 and skip frontend compilation.
-if [[ "${PULSAR_USE_PREBUILT_UI:-0}" != "1" ]]; then
-  echo
-  echo "========== LOCAL UI BUILD =========="
-  "$ROOT/core/scripts/build-ui.sh"
-fi
-# PULSAR_LOCAL_UI_BUILD_END
-
   echo "========== STAGE PROJECT CHANGES =========="
   git -C "$ROOT" status --short
   git -C "$ROOT" add -A
@@ -382,15 +417,17 @@ create_local_backups() {
   local reason="$5"
 
   require_command tar
+  require_command sha256sum
 
   mkdir -p "$RUN_GIT_BACKUP_DIR"
 
-  local safe_branch backup_base bundle archive metadata
+  local safe_branch backup_base bundle archive metadata checksums
   safe_branch="${branch//\//-}"
   backup_base="$RUN_GIT_BACKUP_DIR/Pulsar-${safe_branch}-${timestamp_compact}-${commit_hash:0:12}"
   bundle="${backup_base}.bundle"
   archive="${backup_base}.tar.gz"
   metadata="${backup_base}.info.txt"
+  checksums="${backup_base}.sha256"
 
   echo
   echo "========== LOCAL BACKUP =========="
@@ -420,9 +457,11 @@ create_local_backups() {
     printf 'Source archive: %s\n' "$archive"
   } >"$metadata"
 
+  sha256sum "$bundle" "$archive" "$metadata" >"$checksums"
 
   log "Git bundle: $bundle"
   log "Source archive: $archive"
+  log "Checksums: $checksums"
 }
 
 push_run_to_github() {
@@ -492,7 +531,7 @@ run_remote_pulsar() {
   # automatically enabled here, because every controlled ./run.sh must create
   # a GitHub checkpoint before files are sent to the Pulsar device.
   "$ROOT/core/scripts/dev-sync.sh" --once
-  log "Pulsar synced and health-verified on ${SYNC_REMOTE_USER}@${SYNC_REMOTE_HOST}:${SYNC_REMOTE_DIR}"
+  log "Pulsar synced and started on ${SYNC_REMOTE_USER}@${SYNC_REMOTE_HOST}:${SYNC_REMOTE_DIR}"
 }
 
 list_local_backups() {
@@ -507,41 +546,21 @@ list_local_backups() {
 
 case "$command" in
   start|run)
+    echo
+    echo "========== REMOTE-ONLY DEPLOYMENT =========="
+    log "Local UI/C++/CUDA build is disabled. This computer only commits, pushes and deploys."
+
+    load_sync_config
+    if ! remote_start_requested; then
+      echo "ERROR: Remote deployment is not enabled or points to this local directory." >&2
+      echo "Check core/config/dev-sync.env and SYNC_REMOTE_* values." >&2
+      exit 1
+    fi
+
+    preflight_remote_target
     professional_git_checkpoint
-
-    if remote_start_requested; then
-      run_remote_pulsar
-      exit 0
-    fi
-
-    if ! needs_dependencies; then
-      "$ROOT/core/scripts/install-dependencies.sh"
-    fi
-
-    if ui_needs_build; then
-      "$ROOT/core/scripts/build-ui.sh"
-    fi
-
-    "$ROOT/core/scripts/build-cpp.sh"
-
-    if [[ -n "${DISPLAY:-}" ]]; then
-      exec "$ROOT/core/scripts/start-session.sh"
-    fi
-
-    if [[ -d /run/systemd/system ]]; then
-      if [[ ! -f /etc/systemd/system/pulsar-kiosk.service ]]; then
-        "$ROOT/core/scripts/install-service.sh"
-      fi
-      sudo systemctl restart pulsar-kiosk.service
-      log "Pulsar started. Follow logs with: ./run.sh logs"
-      exit 0
-    fi
-
-    warn "No X11 display or systemd was found; starting the API in headless mode."
-    export PULSAR_HEADLESS=1
-    exec "$PULSAR_BINARY" \
-      --ui-root "$ROOT/ui/dist" \
-      --data-root "$PULSAR_DATA_DIR"
+    run_remote_pulsar
+    exit 0
     ;;
 
   backup|git-backup|checkpoint)
@@ -553,7 +572,10 @@ case "$command" in
     ;;
 
   build)
-    "$ROOT/core/scripts/build-cpp.sh"
+    if ui_needs_build; then
+      "$ROOT/core/scripts/build-ui.sh"
+    fi
+    PULSAR_REQUIRE_CUDA="$RUN_REQUIRE_CUDA" "$ROOT/core/scripts/build-cpp.sh"
     ;;
 
   build-ui)
@@ -660,12 +682,20 @@ Usage:
   ./run.sh clean
 
 Default ./run.sh:
-  Ask for the run reason
-  -> create a timestamped commit, even with no changed files
-  -> create a timestamped annotated tag
+  Do not build or start anything on the personal computer
+  -> verify SSH access to the project computer
+  -> create a timestamped Git commit and annotated tag
   -> create verified local bundle/source backups
   -> atomically push branch + tag to GitHub over port 443
-  -> sync and start Pulsar on 192.168.1.123
+  -> sync source to 192.168.1.123
+  -> build UI + CUDA/C++ and restart pulsar-kiosk.service remotely
+
+Optional environment variables:
+  RUN_GIT_COMMIT_MESSAGE="message"   Change the automatic checkpoint message
+  RUN_GIT_PROMPT=1                   Prompt for a checkpoint message
+  RUN_VERIFY_SMOKE=0                 Skip smoke test (not recommended)
+  RUN_REMOTE_PREFLIGHT=0             Skip SSH preflight (not recommended)
+  RUN_REQUIRE_CUDA=0                 Allow CPU fallback build (higher latency)
 USAGE
     exit 2
     ;;

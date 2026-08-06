@@ -23,8 +23,7 @@ bool GpuBayerPipeline::processStaged(
     BayerPattern,
     uint32_t,
     uint32_t,
-    const uint8_t*&,
-    std::size_t&,
+    std::shared_ptr<const PixelBuffer>&,
     GpuBayerTimings&,
     std::string& error) {
   error = "CUDA support was not compiled into this build";

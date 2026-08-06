@@ -4,7 +4,6 @@ import type {
   CameraCycleField,
   CameraField,
   DisplayEndpointId,
-  DisplayPortRole,
   DisplayMode,
   ExactPageId,
   HmiControlState,
@@ -36,9 +35,8 @@ export interface HmiHandlers {
   onEyeSwapToggle: () => void;
   onSelectDisplay: (id: DisplayEndpointId) => void;
   onDisplayMode: (id: DisplayEndpointId, mode: DisplayMode) => void;
-  onDisplayVolume: (id: DisplayEndpointId, value: number) => void;
-  onDisplayMuteToggle: (id: DisplayEndpointId) => void;
-  onDisplayButtonSoundToggle: (id: DisplayEndpointId) => void;
+  onDisplayValue: (id: DisplayEndpointId, field: "brightness" | "volume", value: number) => void;
+  onAudioSourceCycle: () => void;
   onToggleRecording: () => void;
   onSaveTargetCycle: () => void;
   onOpenRecordings: () => void;
@@ -47,7 +45,6 @@ export interface HmiHandlers {
   onCyclePedalMapping: (gesture: PedalGesture) => void;
   onCustomizePedal: () => void;
   onOpenSystemPanel: (panel: SystemPanelId) => void;
-  onAssignDisplayPort: (connector: string, role: DisplayPortRole) => void;
 }
 
 export function renderDesignedPage({
@@ -83,7 +80,7 @@ export function renderDesignedPage({
     case "measurement":
       return <MeasurementScreen header={renderHeader("Measurement", back)} onOpenStereo={() => openPage("stereo-3d")} />;
     case "display-settings":
-      return <DisplayScreen header={renderHeader("Display Settings", back)} state={state} onSelectDisplay={handlers.onSelectDisplay} onDisplayMode={handlers.onDisplayMode} onDisplayVolume={handlers.onDisplayVolume} onDisplayMuteToggle={handlers.onDisplayMuteToggle} />;
+      return <DisplayScreen header={renderHeader("Display Settings", back)} state={state} onSelectDisplay={handlers.onSelectDisplay} onDisplayMode={handlers.onDisplayMode} onDisplayValue={handlers.onDisplayValue} onAudioSourceCycle={handlers.onAudioSourceCycle} />;
     case "recording":
       return <RecordingScreen header={renderHeader("Recording", back)} recordingActive={state.recordingActive} elapsed={state.recordingElapsed} saveTarget={state.saveTarget as SaveTarget} onToggleRecording={handlers.onToggleRecording} onSaveTargetCycle={handlers.onSaveTargetCycle} onOpenRecordings={handlers.onOpenRecordings} />;
     case "gallery":
@@ -93,7 +90,7 @@ export function renderDesignedPage({
     case "pedals":
       return <PedalsScreen header={renderHeader("Pedals", back)} selectedPedal={state.selectedPedal} mappings={state.pedalMaps[state.selectedPedal]} onSelectPedal={handlers.onSelectPedal} onCycleMapping={handlers.onCyclePedalMapping} onCustomize={handlers.onCustomizePedal} />;
     case "system":
-      return <SystemScreen header={renderHeader("System", back)} state={state} activePanel={state.systemPanel} checkCount={state.systemChecks} onOpenPanel={handlers.onOpenSystemPanel} onAssignDisplayPort={handlers.onAssignDisplayPort} snapshot={wifiSnapshot} onOpenWifi={onOpenWifi} />;
+      return <SystemScreen header={renderHeader("System", back)} activePanel={state.systemPanel} checkCount={state.systemChecks} onOpenPanel={handlers.onOpenSystemPanel} snapshot={wifiSnapshot} onOpenWifi={onOpenWifi} />;
     default:
       return <HomeScreen header={renderHeader("Home", undefined, true)} openPage={openPage} />;
   }

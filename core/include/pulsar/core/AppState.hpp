@@ -11,7 +11,7 @@ struct CameraControls {
   double zoom = 1.0;
   int focus = 0;
   int brightness = 60;
-  double exposureUs = 29000.0;
+  double exposureUs = 12000.0;
   double gainDb = 6.0;
   bool autoExposure = false;
   std::string whiteBalance = "Manual";
@@ -21,11 +21,7 @@ struct CameraControls {
 };
 
 struct DisplayControls {
-  std::string mainDisplayMode = "2D";
-  std::array<std::string, 3> outputModes{"2D", "3D", "3D"};
-  std::array<int, 3> outputVolumes{125, 125, 125};
-  std::array<bool, 3> outputMuted{false, false, false};
-  std::array<bool, 3> outputButtonSounds{true, true, true};
+  std::string mainDisplayMode = "3D";
   bool swapEyes = false;
   int gapPx = 0;
   bool mirrorLeft = false;

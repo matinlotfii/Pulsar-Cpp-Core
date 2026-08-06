@@ -1,9 +1,14 @@
 cmake_minimum_required(VERSION 3.20)
 
-# The development laptop can build the CPU fallback without CUDA, while the
-# Pulsar target automatically enables CUDA when the versioned toolkit exists.
-if(NOT DEFINED CMAKE_CUDA_COMPILER AND EXISTS "/usr/local/cuda-13.2/bin/nvcc")
-  set(CMAKE_CUDA_COMPILER "/usr/local/cuda-13.2/bin/nvcc" CACHE FILEPATH "CUDA compiler" FORCE)
+# Build a CPU fallback when CUDA is unavailable. Prefer the validated 13.2
+# toolkit on the Pulsar target, while also accepting the conventional
+# /usr/local/cuda symlink for maintainability.
+if(NOT DEFINED CMAKE_CUDA_COMPILER)
+  if(EXISTS "/usr/local/cuda-13.2/bin/nvcc")
+    set(CMAKE_CUDA_COMPILER "/usr/local/cuda-13.2/bin/nvcc" CACHE FILEPATH "CUDA compiler" FORCE)
+  elseif(EXISTS "/usr/local/cuda/bin/nvcc")
+    set(CMAKE_CUDA_COMPILER "/usr/local/cuda/bin/nvcc" CACHE FILEPATH "CUDA compiler" FORCE)
+  endif()
 endif()
 
 project(PulsarCppCore VERSION 1.0.0 LANGUAGES CXX)
@@ -26,7 +31,7 @@ if(CMAKE_CUDA_COMPILER)
   enable_language(CUDA)
   set(CMAKE_CUDA_STANDARD 17)
   set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-  find_package(CUDAToolkit 13.2 QUIET)
+  find_package(CUDAToolkit QUIET)
   if(CUDAToolkit_FOUND)
     set(PULSAR_CUDA_AVAILABLE ON)
   endif()
@@ -115,16 +120,11 @@ target_link_libraries(pulsar_ui_backend PUBLIC pulsar_core_state pulsar_camera T
 
 add_executable(pulsar-core core/src/main.cpp)
 target_link_libraries(pulsar-core PRIVATE pulsar_ui_backend pulsar_camera pulsar_core_state)
-# Keep the bundled Galaxy SDK discoverable both in the build tree and when the
-# executable is launched from core/build. Using CMake's RPATH properties avoids
-# the previous literal "$$ORIGIN" entry produced by target_link_options.
-set_target_properties(pulsar-core PROPERTIES
-  BUILD_RPATH "$ORIGIN/../../camera/vendor/galaxy/lib"
-  INSTALL_RPATH "$ORIGIN/../../camera/vendor/galaxy/lib")
-target_link_options(pulsar-core PRIVATE "LINKER:--disable-new-dtags")
+set_target_properties(pulsar-core PROPERTIES BUILD_RPATH "${GALAXY_ROOT}/lib")
+target_link_options(pulsar-core PRIVATE "-Wl,--disable-new-dtags,-rpath,$ORIGIN/../../camera/vendor/galaxy/lib")
 if(PULSAR_CUDA_AVAILABLE)
   set_property(TARGET pulsar-core APPEND PROPERTY BUILD_RPATH "${CUDAToolkit_LIBRARY_DIR}")
-  set_property(TARGET pulsar-core APPEND PROPERTY INSTALL_RPATH "${CUDAToolkit_LIBRARY_DIR}")
+  target_link_options(pulsar-core PRIVATE "-Wl,-rpath,${CUDAToolkit_LIBRARY_DIR}")
 endif()
 
 foreach(target pulsar_core_state pulsar_camera pulsar_ui_backend pulsar-core)

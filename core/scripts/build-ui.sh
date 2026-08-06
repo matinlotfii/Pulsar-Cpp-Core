@@ -5,99 +5,18 @@ FRONTEND="$ROOT/ui/frontend"
 DIST="$ROOT/ui/dist"
 IMPORTED_DIST="$ROOT/ui/vendor/exo-ui-dist"
 
-# PULSAR_LOCAL_NODE_BEGIN
-# The server receives ui/dist built by the development laptop.
-if [[ "${PULSAR_USE_PREBUILT_UI:-0}" == "1" ]]; then
-  if [[ ! -f "$DIST/index.html" ]]; then
-    echo "ERROR: Prebuilt Pulsar UI is missing: $DIST/index.html" >&2
-    exit 1
-  fi
-
-  echo "[Pulsar] Using prebuilt UI at $DIST"
-  exit 0
-fi
-
-# Local frontend build: use an already-installed modern Node.js.
-pulsar_activate_local_node() {
-  local major=0
-
-  if command -v node >/dev/null 2>&1; then
-    major="$(
-      node -p 'parseInt(process.versions.node.split(".")[0], 10)' \
-        2>/dev/null || printf '0'
-    )"
-  fi
-
-  if (( major < 18 )); then
-    export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
-
-    if [[ -s "$NVM_DIR/nvm.sh" ]]; then
-      # shellcheck disable=SC1090
-      . "$NVM_DIR/nvm.sh"
-      nvm use 22 >/dev/null 2>&1 || true
-      hash -r
-    fi
-  fi
-
-  if ! command -v node >/dev/null 2>&1; then
-    echo "ERROR: Node.js روی سیستم محلی پیدا نشد." >&2
-    exit 1
-  fi
-
-  major="$(
-    node -p 'parseInt(process.versions.node.split(".")[0], 10)' \
-      2>/dev/null || printf '0'
-  )"
-
-  if (( major < 18 )); then
-    echo "ERROR: برای ساخت UI به Node.js 18 یا جدیدتر نیاز است." >&2
-    echo "Active Node: $(node --version 2>/dev/null || echo unavailable)" >&2
-    exit 1
-  fi
-}
-
-pulsar_activate_local_node
-# PULSAR_LOCAL_NODE_END
-
-
 if [[ -f "$FRONTEND/package.json" && -f "$FRONTEND/vite.config.ts" ]]; then
   (
     cd "$FRONTEND"
-    node_major="$(
-      node -p 'parseInt(process.versions.node.split(".")[0], 10)'
-    )"
-    dependency_stamp="node_modules/.pulsar-node-major"
-    dependencies_valid=1
-
-    [[ -d node_modules ]] || dependencies_valid=0
-    [[ -f "$dependency_stamp" ]] || dependencies_valid=0
-
-    if [[ -f "$dependency_stamp" ]] &&
-       [[ "$(cat "$dependency_stamp" 2>/dev/null || true)" != "$node_major" ]]; then
-      dependencies_valid=0
-    fi
-
-    if ! node -e '
-      require.resolve("typescript/package.json");
-      require.resolve("vite/package.json");
-    ' >/dev/null 2>&1; then
-      dependencies_valid=0
-    fi
-
-    if (( dependencies_valid == 0 )); then
-      echo "Installing Pulsar UI dependencies for Node.js $(node --version)..."
+    if [[ ! -x node_modules/.bin/vite || ! -x node_modules/.bin/tsc ]]; then
       rm -rf node_modules
-
       if [[ -f package-lock.json ]]; then
         npm ci --no-fund --no-audit
       else
         npm install --no-fund --no-audit
       fi
-
-      printf '%s\n' "$node_major" > "$dependency_stamp"
     fi
-
-    npm run build
+    npm run build >/dev/null
   )
   rm -rf "$DIST"
   mkdir -p "$DIST"
