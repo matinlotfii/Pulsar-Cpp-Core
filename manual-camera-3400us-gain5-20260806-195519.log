@@ -17,3 +17,130 @@ Remote: origin -> ssh://git@ssh.github.com:443/matinlotfii/Pulsar-Cpp-Core.git
  M ui/backend/src/HttpServer.cpp
 ?? .manual-camera-backup-20260806-195519/
 ?? manual-camera-3400us-gain5-20260806-195519.log
+[main 773e151] Pulsar observable realtime UI motion and multi-output viewer V9 [run 2026-08-06 19:55:26 +0330]
+ 19 files changed, 5718 insertions(+), 10 deletions(-)
+ create mode 100644 .manual-camera-backup-20260806-195519/camera/profiles/FCU22080658-maxfps395-softsync.txt
+ create mode 100644 .manual-camera-backup-20260806-195519/camera/profiles/FCU22080658-reference350-realtime.txt
+ create mode 100644 .manual-camera-backup-20260806-195519/camera/profiles/FCU22080658-reference350.txt
+ create mode 100644 .manual-camera-backup-20260806-195519/camera/profiles/FCU22080658-throughput395.txt
+ create mode 100644 .manual-camera-backup-20260806-195519/camera/profiles/FCU22080659-maxfps395-softsync.txt
+ create mode 100644 .manual-camera-backup-20260806-195519/camera/profiles/FCU22080659-reference350-realtime.txt
+ create mode 100644 .manual-camera-backup-20260806-195519/camera/profiles/FCU22080659-reference350.txt
+ create mode 100644 .manual-camera-backup-20260806-195519/camera/profiles/FCU22080659-throughput350.txt
+ create mode 100644 .manual-camera-backup-20260806-195519/camera/profiles/FCU22080659-throughput395.txt
+ create mode 100644 .manual-camera-backup-20260806-195519/camera/profiles/FCU22080659.txt
+ create mode 100644 .manual-camera-backup-20260806-195519/camera/src/CameraDevice.cpp
+ create mode 100644 .manual-camera-backup-20260806-195519/core/config/pulsar.env
+ create mode 100644 .manual-camera-backup-20260806-195519/ui/backend/src/HttpServer.cpp
+ create mode 100644 manual-camera-3400us-gain5-20260806-195519.log
+
+========== LOCAL BACKUP ==========
+/home/matin/Downloads/Pulsar-Git-Backups/Pulsar-main-20260806-195526-773e151dce26.bundle is okay
+[1;36m[Pulsar][0m Backup: /home/matin/Downloads/Pulsar-Git-Backups/Pulsar-main-20260806-195526-773e151dce26.bundle
+
+========== PUSH TO GITHUB ==========
+To ssh://ssh.github.com:443/matinlotfii/Pulsar-Cpp-Core.git
+   3e33e7c..773e151  main -> main
+ * [new tag]         pulsar-run-20260806-195526-773e151dce26 -> pulsar-run-20260806-195526-773e151dce26
+Branch 'main' set up to track remote branch 'main' from 'origin'.
+[1;36m[Pulsar][0m GitHub push complete: main @ 773e151dce26 (tag pulsar-run-20260806-195526-773e151dce26)
+
+========== REMOTE CLEAN REPLACE ==========
+[1;36m[Pulsar][0m Stopping the old Pulsar runtime/UI and removing the previous remote deployment.
+
+[REMOTE] Stopping old system service: pulsar-kiosk.service
+[REMOTE] Previous Pulsar settings will not be restored.
+[REMOTE] Terminating old Pulsar core, kiosk browser and helper processes.
+[REMOTE] Removing previous project, build tree, UI data and project Git mirror.
+[REMOTE] Removing Pulsar-specific user caches and temporary runtime data.
+[REMOTE] Clean destination ready: /home/matin/Pulsar-Cpp-Core
+[1;36m[Pulsar Sync][0m Synced to matin@192.168.1.123:/home/matin/Pulsar-Cpp-Core
+[Pulsar] Using prebuilt UI at /home/matin/Pulsar-Cpp-Core/ui/dist
+-- The CXX compiler identification is GNU 11.4.0
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- The CUDA compiler identification is NVIDIA 13.2.86
+-- Detecting CUDA compiler ABI info
+-- Detecting CUDA compiler ABI info - done
+-- Check for working CUDA compiler: /usr/local/cuda-13.2/bin/nvcc - skipped
+-- Detecting CUDA compile features
+-- Detecting CUDA compile features - done
+-- Looking for C++ include pthread.h
+-- Looking for C++ include pthread.h - found
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE  
+-- Found JPEG: /usr/lib/x86_64-linux-gnu/libjpeg.so (found version "80") 
+-- Pulsar CUDA/NPP pipeline: enabled (/usr/local/cuda-13.2/bin/nvcc)
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /home/matin/Pulsar-Cpp-Core/core/build
+[1;36m[Pulsar][0m CUDA/NPP pipeline confirmed: /usr/local/cuda-13.2/bin/nvcc
+[ 13%] Building CXX object CMakeFiles/pulsar_core_state.dir/core/src/Config.cpp.o
+[ 20%] Building CXX object CMakeFiles/pulsar_core_state.dir/core/src/ResourceMonitor.cpp.o
+[ 20%] Building CXX object CMakeFiles/pulsar_core_state.dir/core/src/AppState.cpp.o
+[ 26%] Linking CXX static library libpulsar_core_state.a
+[ 26%] Built target pulsar_core_state
+[ 46%] Building CXX object CMakeFiles/pulsar_camera.dir/camera/src/CameraManager.cpp.o
+[ 46%] Building CXX object CMakeFiles/pulsar_camera.dir/camera/src/CameraDevice.cpp.o
+[ 53%] Building CXX object CMakeFiles/pulsar_camera.dir/camera/src/Recorder.cpp.o
+[ 53%] Building CXX object CMakeFiles/pulsar_camera.dir/camera/src/JpegEncoder.cpp.o
+[ 60%] Building CXX object CMakeFiles/pulsar_camera.dir/camera/src/SbsRenderer.cpp.o
+[ 66%] Building CUDA object CMakeFiles/pulsar_camera.dir/camera/src/GpuBayerPipeline.cu.o
+[ 73%] Linking CXX static library libpulsar_camera.a
+[ 73%] Built target pulsar_camera
+[ 80%] Building CXX object CMakeFiles/pulsar_ui_backend.dir/ui/backend/src/HttpServer.cpp.o
+/home/matin/Pulsar-Cpp-Core/ui/backend/src/HttpServer.cpp:1183:31: warning: ‘std::optional<pulsar::ui::{anonymous}::AudioSinkState> pulsar::ui::{anonymous}::readSinkState(const string&)’ defined but not used [-Wunused-function]
+ 1183 | std::optional<AudioSinkState> readSinkState(const std::string& sink) {
+      |                               ^~~~~~~~~~~~~
+[ 86%] Linking CXX static library libpulsar_ui_backend.a
+[ 86%] Built target pulsar_ui_backend
+[ 93%] Building CXX object CMakeFiles/pulsar-core.dir/core/src/main.cpp.o
+[100%] Linking CXX executable pulsar-core
+[100%] Built target pulsar-core
+Pulsar health:
+{"ok":true,"sdkReady":true,"mock":false}
+Pulsar cameras:
+{"cameras":[{"index":0,"online":true,"label":"Left Camera","model":"MER2-1220-32U3C","serial":"FCU22080658","error":"","fps":0.16,"width":1431,"height":1080,"controls":{"zoom":1.00,"focus":0,"brightness":60,"exposureUs":3400.00,"gainDb":5.00,"autoExposure":false,"whiteBalance":"Manual","enhance":"Low","rotation":0,"frozen":false}},{"index":1,"online":true,"label":"Right Camera","model":"MER2-1220-32U3C","serial":"FCU22080659","error":"","fps":0.16,"width":1431,"height":1080,"controls":{"zoom":1.00,"focus":0,"brightness":60,"exposureUs":3400.00,"gainDb":5.00,"autoExposure":false,"whiteBalance":"Manual","enhance":"Low","rotation":0,"frozen":false}}]}
+Pulsar full-quality realtime path:
+SBS Renderer: stereo-pairing-mode=latest-zero-hold
+SBS Renderer: viewer-canvas=3840x1080+1024+0 panels=2 profile0=1920x1080+0+0 profile1=1920x1080+1920+0
+Left Camera: low-latency stream-buffer-mode=unchanged acquisition-buffers=2 link-throughput-requested-bps=400000000 transfer-size=262144 transfer-urb=64
+SBS Renderer: latency-stats pairing-mode=latest-zero-hold loop-fps=1.27019 left-host-age-ms=0 right-host-age-ms=0 stereo-host-skew-ms=0 camera-frame-id-delta=0 texture-upload-ms=0 texture-upload-max-ms=0 upload-path=gl-pbo prepare-ms=0.00160467 prepare-max-ms=0.001979 render-ms=2.37285 render-max-ms=5.49478 present-ms=0.50105 present-max-ms=0.967015 loop-total-ms=2.87612 loop-total-max-ms=6.4641 panels=2 held-pair-loops=0
+SBS Renderer: latency-stats pairing-mode=latest-zero-hold loop-fps=1.11122 left-host-age-ms=0 right-host-age-ms=0 stereo-host-skew-ms=0 camera-frame-id-delta=0 texture-upload-ms=0 texture-upload-max-ms=0 upload-path=gl-pbo prepare-ms=0.000965333 prepare-max-ms=0.001067 render-ms=0.048992 render-max-ms=0.054823 present-ms=0.118739 present-max-ms=0.142191 loop-total-ms=0.169094 loop-total-max-ms=0.198291 panels=2 held-pair-loops=0
+Right Camera: low-latency stream-buffer-mode=unchanged acquisition-buffers=2 link-throughput-requested-bps=400000000 transfer-size=262144 transfer-urb=64
+Right CameraLeft Camera: software-start-sync=paired: software-start-sync=paired stream-on-mode=parallel stream-on-call-ms= stream-on-mode=parallel stream-on-call-ms=17.3288 stream-on-host-ns=17.2792 stream-on-host-ns=17880648920191
+Left Camera: GPU pipeline ready (CUDA/NPP, canary mode)
+Right Camera: GPU pipeline ready (CUDA/NPP, canary mode)
+Right Camera: latency-stats pipeline=gpu output-fps=0.156203 acquired-fps=0.156203 stale-dropped=0 dequeue-wait-ms=0.048535 raw-copy-ms=8.82609 process-ms=12.9788 publish-ms=3.37396 host-pipeline-ms=25.1791 host-pipeline-max-ms=25.1791 gpu-h2d-ms=2.92925 gpu-debayer-ms=0.14992 gpu-resize-ms=5.57363 gpu-d2h-ms=0.708064 gpu-total-ms=9.36086 gpu-total-max-ms=9.36086
+Left Camera: latency-stats pipeline=gpu output-fps=0.156167 acquired-fps=0.156167 stale-dropped=0 dequeue-wait-ms=0.069764 raw-copy-ms=15.1907 process-ms=7.40575 publish-ms=3.97991 host-pipeline-ms=26.5765 host-pipeline-max-ms=26.5765 gpu-h2d-ms=1.27814 gpu-debayer-ms=0.10016 gpu-resize-ms=2.8887 gpu-d2h-ms=1.46093 gpu-total-ms=5.72794 gpu-total-max-ms=5.72794
+
+PULSAR OBSERVABLE REALTIME V9 VERIFICATION
+==========================================
+VIEWER_CANVAS=3840x1080+1024+0
+VIEWER_PANEL_COUNT=2
+VIEWER_WINDOW_GEOMETRY=3840x1080+1024+0
+VIEWER_WINDOW=PASS
+PANEL_0=PASS mean=6.97 stddev=5.43 samples=720 geometry=1920x1080+0+0
+PANEL_1=PASS mean=5.19 stddev=2.89 samples=720 geometry=1920x1080+1920+0
+GLASSES_PANEL_STATUS=PASS
+UI_MOTION=PASS selective compositor-friendly animations enabled
+UI_TELEMETRY_SOURCE=PASS worker/canvas/rAF instrumentation
+UI_TELEMETRY_ENDPOINT=PASS POST /api/telemetry/ui
+VIEWER_PANELS=PASS actual X11 viewer geometry and pixels
+GLASSES_CONNECTED=PASS connected=1 required=1
+OBSERVABLE_REALTIME_STATUS=FAIL
+FAILED_CHECKS=BASE_REALTIME
+
+============================================================
+PULSAR RUN FAILED
+Exit code: 1
+Line: 443
+Command: "$ROOT/core/scripts/dev-sync.sh" --once
+No local application was started. Existing Git backups remain safe.
+Local diagnostic log: /home/matin/Music/Pulsar-Cpp-Core-observable-realtime-v9-20260806-before-realtime-fix/diagnostics/live/run-20260806-195519/deploy.log
+If failure occurred after REMOTE CLEAN REPLACE, the old remote runtime was intentionally removed.
+============================================================
