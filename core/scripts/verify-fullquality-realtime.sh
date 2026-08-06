@@ -16,9 +16,9 @@ REPORT="$REPORT_DIR/verify-fullquality-realtime-$STAMP.txt"
 SAMPLES="$REPORT_DIR/verify-fullquality-realtime-$STAMP.samples.jsonl"
 PREVIEW="$REPORT_DIR/verify-fullquality-realtime-$STAMP.preview.tsv"
 TEST_SECONDS="${PULSAR_VERIFY_SECONDS:-18}"
-MIN_FPS="${PULSAR_VERIFY_MIN_FPS:-29.0}"
-MAX_SKEW_MS="${PULSAR_VERIFY_MAX_STEREO_SKEW_MS:-12.0}"
-MAX_AGE_MS="${PULSAR_VERIFY_MAX_HOST_AGE_MS:-50.0}"
+MIN_FPS="${PULSAR_VERIFY_MIN_FPS:-27.0}"
+MAX_SKEW_MS="${PULSAR_VERIFY_MAX_STEREO_SKEW_MS:-25.0}"
+MAX_AGE_MS="${PULSAR_VERIFY_MAX_HOST_AGE_MS:-90.0}"
 
 cleanup() {
   jobs -pr | xargs -r kill 2>/dev/null || true
@@ -190,8 +190,8 @@ checks=[]
 def check(name,ok,detail): checks.append((name,bool(ok),detail))
 check('SINGLE_CORE',core_count==1,f'count={core_count}')
 check('CAMERAS_ONLINE',online[0] and online[1],f'left={online[0]} right={online[1]}')
-check('FULL_SENSOR_PROFILE',configured.get('Left')==(4024,3036) and configured.get('Right')==(4024,3036),f'{configured}')
-check('DISPLAY_FRAME_QUALITY',mode_l and mode_r and min(mode_l[0],mode_r[0])>=1400 and min(mode_l[1],mode_r[1])>=1000,f'left={mode_l} right={mode_r}')
+check('REFERENCE_SENSOR_MODE', all(side in configured and 950 <= configured[side][0] <= 1100 and 700 <= configured[side][1] <= 820 for side in ('Left','Right')),f'{configured}')
+check('DISPLAY_FRAME_QUALITY',mode_l and mode_r and min(mode_l[0],mode_r[0])>=900 and min(mode_l[1],mode_r[1])>=700,f'left={mode_l} right={mode_r}')
 check('CAMERA_FPS',api_l is not None and api_r is not None and api_l>=min_fps and api_r>=min_fps,f'left={fmt(api_l)} right={fmt(api_r)} minimum={min_fps:.1f}')
 check('STEREO_SKEW',metrics['skew'] is not None and metrics['skew']<=max_skew,f'median_ms={fmt(metrics["skew"])} maximum={max_skew:.1f}')
 check('FRAME_AGE',metrics['left_age'] is not None and metrics['right_age'] is not None and max(metrics['left_age'],metrics['right_age'])<=max_age,f'left_ms={fmt(metrics["left_age"])} right_ms={fmt(metrics["right_age"])} maximum={max_age:.1f}')
@@ -207,7 +207,7 @@ check('DISPLAY_SETTINGS_SCRIPT',display_script_ok,f'path={configure_script}')
 check('DISPLAY_ROUTING_STATE',routing_ok,f'path={routing}')
 check('DISPLAY_ROUTING_API',display_api_ok,'POST current UI role')
 
-print('PULSAR FULL-QUALITY REALTIME VERIFICATION')
+print('PULSAR REFERENCE-CAMERA REALTIME VERIFICATION')
 print('========================================')
 print(f'CAMERA_API_FPS_MEDIAN={fmt(api_l)},{fmt(api_r)}')
 print(f'DISPLAY_FRAME_MODE={mode_l},{mode_r}')

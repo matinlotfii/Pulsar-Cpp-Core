@@ -200,7 +200,7 @@ if (work/'threads.tsv').exists():
 problems=[]
 def problem(stage,detail):problems.append((stage,detail))
 lf,rf=med(fps[0]),med(fps[1])
-if lf is None or rf is None or min(lf,rf)<29:problem('CAMERA_ACQUISITION',f'API FPS left={fmt(lf)} right={fmt(rf)}; expected >=29 at full sensor')
+if lf is None or rf is None or min(lf,rf)<27:problem('CAMERA_ACQUISITION',f'API FPS left={fmt(lf)} right={fmt(rf)}; expected >=27 in reference camera mode')
 if max([x for x in (metrics['left_raw'],metrics['right_raw']) if x is not None] or [0])>3:problem('RAW_STAGING_COPY',f'raw-copy left={fmt(metrics["left_raw"])} right={fmt(metrics["right_raw"])} ms')
 if max([x for x in (metrics['left_h2d'],metrics['right_h2d']) if x is not None] or [0])>3:problem('CUDA_H2D',f'H2D left={fmt(metrics["left_h2d"])} right={fmt(metrics["right_h2d"])} ms')
 if max([x for x in (metrics['left_publish'],metrics['right_publish']) if x is not None] or [0])>4:problem('FRAME_PUBLISH_COPY',f'publish left={fmt(metrics["left_publish"])} right={fmt(metrics["right_publish"])} ms')

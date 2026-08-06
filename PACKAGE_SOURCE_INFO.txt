@@ -1,0 +1,3 @@
+Pulsar Observable Realtime V9
+Generated from the user-provided V8 full-quality project on 2026-08-06.
+Main changes: selective UI motion, latest-only UI canvas pipeline, multi-output X11 viewer for monitor/glasses, browser/native telemetry, bounded workstation logs, automatic bottleneck summary, destructive clean replacement on every run.

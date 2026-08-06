@@ -1225,7 +1225,7 @@ void CameraDevice::applyControls(const core::CameraControls& controls, bool forc
   // GalaxyView profile has been imported.
   applyLowLatencyAcquisitionSetup(device_, targetFps_);
 
-  // ExposureAuto = controls.autoExposure
+  // Reference mode is manual-only: UI cannot re-enable exposure automation.
   setExposureAutoEnabled(device_, false);
 
   // Gain must be manual; otherwise the requested gain may be overwritten.
@@ -1241,7 +1241,7 @@ void CameraDevice::applyControls(const core::CameraControls& controls, bool forc
   // BlackLevel = 1
   setFloat(device_, "BlackLevel", 1.0);
 
-  // ExposureTime = controls.exposureUs microseconds
+  // ExposureTime is always applied manually.
   setFloat(device_, "ExposureTime", controls.exposureUs);
 
   // AutoExposureTimeMin = 8 microseconds
@@ -1290,6 +1290,9 @@ void CameraDevice::applyControls(const core::CameraControls& controls, bool forc
         controls.enhance == "High" ? 1.0 : 0.5);
   }
 
+  std::cerr << label_ << ": manual-reference-mode exposure-us="
+            << controls.exposureUs << " gain-db=" << controls.gainDb
+            << " exposure-auto=off gain-auto=off white-balance-auto=off\n";
   appliedControls_ = controls;
   controlsApplied_ = true;
 }

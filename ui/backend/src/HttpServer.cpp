@@ -1815,12 +1815,6 @@ void HttpServer::handleClient(int fd) {
     if (auto value = jsonString(request->body, "enhance")) controls.enhance = *value;
     if (auto value = jsonNumber(request->body, "rotation")) controls.rotation = static_cast<int>(*value);
     if (auto value = jsonBool(request->body, "frozen")) controls.frozen = *value;
-
-    // Fixed manual camera operating point.
-    controls.autoExposure = false;
-    controls.exposureUs = 30000.0;
-    controls.gainDb = 0.0;
-    controls.whiteBalance = "Manual";
     state_.updateCamera(static_cast<size_t>(cameraIndex), controls);
     textResponse(fd, "200 OK", "application/json; charset=utf-8", cameraJson(static_cast<size_t>(cameraIndex)));
     return;
