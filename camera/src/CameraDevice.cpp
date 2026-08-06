@@ -208,6 +208,57 @@ void applyLowLatencyAcquisitionSetup(GX_DEV_HANDLE device, int targetFps) {
   setFloat(device, "AcquisitionFrameRate", static_cast<double>(std::max(targetFps, 1)));
 }
 
+
+bool applyLowLatencySensorGeometry(
+    GX_DEV_HANDLE device,
+    int requestedScale,
+    uint32_t fallbackWidth,
+    uint32_t fallbackHeight,
+    int& configuredScale) {
+  if (!envEnabled("PULSAR_CAMERA_HARDWARE_ROI", true)) return false;
+
+  const int scale = envInt(
+      "PULSAR_CAMERA_SENSOR_SCALE", std::clamp(requestedScale, 1, 4), 1, 4);
+  const int roiWidth = envInt(
+      "PULSAR_CAMERA_ROI_WIDTH", static_cast<int>(fallbackWidth), 320, 8192);
+  const int roiHeight = envInt(
+      "PULSAR_CAMERA_ROI_HEIGHT", static_cast<int>(fallbackHeight), 240, 8192);
+
+  // Preserve the imported exposure, gain, white balance, gamma and LUT. Only
+  // sensor geometry changes here. Average binning keeps nearly the full
+  // horizontal field of view, improves signal/noise, and cuts USB/GPU work.
+  setEnumOneOf(device, "BinningHorizontalMode", {"Average", "Sum"});
+  setEnumOneOf(device, "BinningVerticalMode", {"Average", "Sum"});
+  const bool binH = setInt(device, "BinningHorizontal", scale);
+  const bool binV = setInt(device, "BinningVertical", scale);
+  setInt(device, "DecimationHorizontal", 1);
+  setInt(device, "DecimationVertical", 1);
+  setInt(device, "SensorDecimationHorizontal", 1);
+  setInt(device, "SensorDecimationVertical", 1);
+
+  // Width/height must be set before centered offsets on GenICam cameras.
+  setBool(device, "CenterX", false);
+  setBool(device, "CenterY", false);
+  setInt(device, "OffsetX", 0);
+  setInt(device, "OffsetY", 0);
+  const bool widthSet = setInt(device, "Width", roiWidth);
+  const bool heightSet = setInt(device, "Height", roiHeight);
+
+  // Prefer camera-provided centering. If unsupported, center using the current
+  // offset ranges, which already account for the selected width/height.
+  if (!setBool(device, "CenterX", true)) {
+    GX_INT_VALUE offset{};
+    if (getInt(device, "OffsetX", offset)) setInt(device, "OffsetX", offset.nMax / 2);
+  }
+  if (!setBool(device, "CenterY", true)) {
+    GX_INT_VALUE offset{};
+    if (getInt(device, "OffsetY", offset)) setInt(device, "OffsetY", offset.nMax / 2);
+  }
+
+  configuredScale = (binH && binV) ? scale : 1;
+  return widthSet && heightSet;
+}
+
 std::string lowerAscii(std::string value) {
   std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
     return static_cast<char>(std::tolower(ch));
@@ -457,10 +508,26 @@ void CameraDevice::loop() {
           gpuRequested_ && !gpuDisabledAfterFailure_ &&
           gpuPipeline_ != nullptr && bayer8(newest->nPixelFormat);
 
-      if (canStageGpu && gpuPipeline_->stageInput(
-                             static_cast<const uint8_t*>(newest->pImgBuf),
-                             static_cast<std::size_t>(newest->nImgSize),
-                             gpuStageError)) {
+      bool staged = false;
+      if (canStageGpu) {
+        const auto* sdkPixels =
+            static_cast<const uint8_t*>(newest->pImgBuf);
+        const auto sdkBytes =
+            static_cast<std::size_t>(newest->nImgSize);
+
+        if (envEnabled("PULSAR_GPU_DIRECT_SDK_H2D", true)) {
+          staged = gpuPipeline_->stageInputDirectToDevice(
+              sdkPixels, sdkBytes, gpuStageError);
+        }
+        if (!staged) {
+          // Safe runtime fallback: retain the original pinned-host staging path
+          // when direct H2D is disabled or unsupported by the CUDA driver.
+          staged = gpuPipeline_->stageInput(
+              sdkPixels, sdkBytes, gpuStageError);
+        }
+      }
+
+      if (staged) {
         copiedFrame.pImgBuf = nullptr;
         gpuInputStaged = true;
         havePrivateFrame = true;
@@ -468,7 +535,7 @@ void CameraDevice::loop() {
         if (canStageGpu) {
           gpuDisabledAfterFailure_ = true;
           std::cerr << label_
-                    << ": GPU pinned-input staging failed; CPU fallback active: "
+                    << ": GPU input staging failed; CPU fallback active: "
                     << gpuStageError << '\n';
         }
 
@@ -901,65 +968,32 @@ bool CameraDevice::configure() {
     }
   }
 
-  // PULSAR_REFERENCE_PROFILE_AUTHORITY_V2
-  // The imported GalaxyView file owns all sensor and image parameters.
-  // Runtime controls are allowed only when no profile was imported.
+  // The GalaxyView profile remains authoritative for exposure, gain, light,
+  // white balance, gamma and LUT. Acquisition timing and sensor geometry are
+  // then optimized independently for the 1920x1080 low-latency path.
   if (!profileImported_) {
     if (setEnumOneOf(device_, "UserSetSelector", {"Default", "UserSet0"})) {
       setCommand(device_, "UserSetLoad");
     }
-    applyLowLatencyAcquisitionSetup(device_, targetFps_);
+  }
 
-    setEnumOneOf(device_, "RegionSelector", {"Region0", "Region1"});
-    setEnum(device_, "RegionMode", "Off");
+  applyLowLatencyAcquisitionSetup(device_, targetFps_);
+  setEnumOneOf(device_, "RegionSelector", {"Region0", "Region1"});
+  setEnum(device_, "RegionMode", "Off");
 
-    GX_INT_VALUE sensorWidthMax{};
-    GX_INT_VALUE sensorHeightMax{};
-    const bool haveSensorWidth = getInt(device_, "WidthMax", sensorWidthMax);
-    const bool haveSensorHeight = getInt(device_, "HeightMax", sensorHeightMax);
-    int sensorScale = std::clamp(sensorScale_, 1, 4);
+  const bool geometryApplied = applyLowLatencySensorGeometry(
+      device_, sensorScale_, maxWidth_, maxHeight_, configuredSensorScale_);
+  if (!geometryApplied) {
+    std::cerr << label_
+              << ": warning: hardware ROI/binning unavailable; profile geometry retained\n";
+  }
 
-    if (haveSensorWidth && haveSensorHeight) {
-      const double widthRatio =
-          static_cast<double>(sensorWidthMax.nCurValue) / std::max(1u, maxWidth_);
-      const double heightRatio =
-          static_cast<double>(sensorHeightMax.nCurValue) / std::max(1u, maxHeight_);
-      const int recommendedScale = std::clamp(
-          static_cast<int>(std::ceil(std::max({1.0, widthRatio, heightRatio}))),
-          1,
-          4);
-      sensorScale = std::max(sensorScale, recommendedScale);
-    }
-
-    configuredSensorScale_ = sensorScale;
-    setEnumOneOf(device_, "BinningHorizontalMode", {"Average", "Sum"});
-    setEnumOneOf(device_, "BinningVerticalMode", {"Average", "Sum"});
-    setInt(device_, "BinningHorizontal", sensorScale);
-    setInt(device_, "BinningVertical", sensorScale);
-    setInt(device_, "DecimationHorizontal", 1);
-    setInt(device_, "DecimationVertical", 1);
-    setInt(device_, "SensorDecimationHorizontal", 1);
-    setInt(device_, "SensorDecimationVertical", 1);
-    setBool(device_, "CenterX", false);
-    setBool(device_, "CenterY", false);
-
-    GX_INT_VALUE widthMax{};
-    GX_INT_VALUE heightMax{};
-
-    if (getInt(device_, "WidthMax", widthMax)) {
-      setInt(device_, "Width", widthMax.nCurValue);
-    }
-    if (getInt(device_, "HeightMax", heightMax)) {
-      setInt(device_, "Height", heightMax.nCurValue);
-    }
-
-    setInt(device_, "OffsetX", 0);
-    setInt(device_, "OffsetY", 0);
+  if (!profileImported_) {
     applyControls(controls_(), true);
   }
 
-  // Keep only host-side latency optimizations outside profile authority.
-  // These do not alter exposure, gain, color, LUT, ROI or sensor geometry.
+  // Keep transport/buffer latency optimizations outside profile authority.
+  // Exposure, gain, color, gamma and LUT remain owned by the known-good profile.
   GX_DS_HANDLE streamHandle = nullptr;
   const bool haveStreamHandle =
       GXGetDataStreamHandleFromDev(device_, 0, &streamHandle) ==
@@ -970,8 +1004,11 @@ bool CameraDevice::configure() {
       ? static_cast<GX_PORT_HANDLE>(streamHandle)
       : static_cast<GX_PORT_HANDLE>(device_);
 
-  setInt(streamPort, "StreamTransferSize", 256 * 1024);
-  setInt(streamPort, "StreamTransferNumberUrb", 64);
+  // Large USB transfers and a deep URB queue reduce transfer overhead while
+  // NewestOnly plus two acquisition buffers prevents stale-frame buildup.
+  setInt(streamPort, "StreamTransferSize", 1024 * 1024);
+  setInt(streamPort, "StreamTransferNumberUrb", 200);
+  setInt(streamPort, "AcquisitionBufferCachePrec", 40);
   setBool(device_, "FrameStoreCoverActive", true);
   setEnum(device_, "CoverFrameStoreMode", "On");
 
@@ -984,7 +1021,8 @@ bool CameraDevice::configure() {
     streamBufferMode = "OldestFirstOverwrite";
   }
 
-  constexpr uint64_t kAcquisitionBufferCount = 2;
+  const uint64_t kAcquisitionBufferCount = static_cast<uint64_t>(
+      envInt("PULSAR_ACQUISITION_BUFFER_COUNT", 2, 2, 8));
 
   if (GXSetAcqusitionBufferNumber(device_, kAcquisitionBufferCount) !=
       GX_STATUS_SUCCESS) {

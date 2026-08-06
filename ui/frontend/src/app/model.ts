@@ -36,9 +36,9 @@ export type CameraField = "zoom" | "focus" | "brightness";
 export type CameraCycleField = "whiteBalance" | "enhance";
 export type WhiteBalanceMode = "Auto" | "Warm" | "Cool" | "Manual";
 export type EnhanceMode = "Low" | "Medium" | "High";
-export type DisplayEndpointId = "display" | "ar-glass-1" | "ar-glass-2" | "ar-glass-3";
+export type DisplayEndpointId = "display" | "ar-glass-1" | "ar-glass-2";
 export type DisplayMode = "2D" | "3D";
-export type DisplayPortRole = "none" | "ui" | "display" | "ar-glass-1" | "ar-glass-2" | "ar-glass-3";
+export type DisplayPortRole = "none" | "ui" | "display" | "ar-glass-1" | "ar-glass-2";
 export type AudioSource = "Camera Left" | "Camera Right" | "Mixed";
 export type SaveTarget = "Internal Storage" | "External USB" | "Network Share";
 export type StereoMode = "SBS" | "Line Interleaved";
@@ -238,8 +238,7 @@ export const pedalActions: PedalAction[] = ["Snapshot", "Record", "Freeze", "Zoo
 export const displayDefaults: Record<DisplayEndpointId, DisplayEndpointState> = {
   display: { id: "display", icon: "Monitor", label: "Display", connector: "", connected: false, mode: "2D", volume: 125, muted: false, buttonSoundEnabled: true, active: true },
   "ar-glass-1": { id: "ar-glass-1", icon: "Glasses", label: "AR Glass 1", connector: "", connected: false, mode: "3D", volume: 125, muted: false, buttonSoundEnabled: true, active: false },
-  "ar-glass-2": { id: "ar-glass-2", icon: "Glasses", label: "AR Glass 2", connector: "", connected: false, mode: "3D", volume: 125, muted: false, buttonSoundEnabled: true, active: false },
-  "ar-glass-3": { id: "ar-glass-3", icon: "Glasses", label: "AR Glass 3", connector: "", connected: false, mode: "3D", volume: 125, muted: false, buttonSoundEnabled: true, active: false }
+  "ar-glass-2": { id: "ar-glass-2", icon: "Glasses", label: "AR Glass 2", connector: "", connected: false, mode: "3D", volume: 125, muted: false, buttonSoundEnabled: true, active: false }
 };
 
 export const initialSystemInfo: SystemInfoState = {

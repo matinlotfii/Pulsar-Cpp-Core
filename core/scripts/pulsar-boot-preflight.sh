@@ -39,11 +39,10 @@ graphics_ready() {
 
 enabled="${PULSAR_BOOT_PREFLIGHT_ENABLED:-1}"
 required_cameras="${PULSAR_BOOT_PREFLIGHT_REQUIRED_CAMERAS:-2}"
-stable_samples_needed="${PULSAR_BOOT_PREFLIGHT_STABLE_SAMPLES:-2}"
-sample_interval="${PULSAR_BOOT_PREFLIGHT_SAMPLE_INTERVAL_SEC:-1}"
-timeout_sec="${PULSAR_BOOT_PREFLIGHT_TIMEOUT_SEC:-12}"
-final_delay="${PULSAR_BOOT_PREFLIGHT_FINAL_DELAY_SEC:-0.5}"
-udev_timeout="${PULSAR_BOOT_PREFLIGHT_UDEV_SETTLE_TIMEOUT_SEC:-3}"
+stable_samples_needed="${PULSAR_BOOT_PREFLIGHT_STABLE_SAMPLES:-1}"
+sample_interval="${PULSAR_BOOT_PREFLIGHT_SAMPLE_INTERVAL_SEC:-0.25}"
+timeout_sec="${PULSAR_BOOT_PREFLIGHT_TIMEOUT_SEC:-4}"
+final_delay="${PULSAR_BOOT_PREFLIGHT_FINAL_DELAY_SEC:-0}"
 
 if [[ "$enabled" != "1" ]]; then
   log_prefight "Disabled; continuing without startup delay."
@@ -61,7 +60,9 @@ modprobe nvidia_drm 2>/dev/null || true
 modprobe nvidia_uvm 2>/dev/null || true
 
 systemctl start nvidia-persistenced.service 2>/dev/null || true
-udevadm settle --timeout="$udev_timeout" 2>/dev/null || true
+# PULSAR_NO_GLOBAL_UDEV_SETTLE_V3
+# Global udev settle waits for every faulty/hotplug USB port. Pulsar checks
+# only its own NVIDIA and camera sysfs nodes below.
 
 stable=0
 ready=0

@@ -17,3 +17,11 @@ tree.txt
 
 # Server/runtime backups
 .pulsar-backups/
+run-logs/
+pulsar-*-diagnostics-*.tar.gz
+pulsar-camera-render-touch-*.tar.gz
+/pulsar-root-repair.sh
+/pulsar-*-diagnose.sh
+/pulsar-*-diagnostics-*.tar.gz
+/pulsar-*-report-*.txt
+/pulsar-two-xreal-report-*.txt

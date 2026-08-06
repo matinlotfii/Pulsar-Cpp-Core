@@ -31,6 +31,8 @@ if(CMAKE_CUDA_COMPILER)
     set(PULSAR_CUDA_AVAILABLE ON)
   endif()
 endif()
+set(PULSAR_CUDA_AVAILABLE "${PULSAR_CUDA_AVAILABLE}" CACHE BOOL
+  "Whether the CUDA/NPP camera pipeline is enabled" FORCE)
 
 find_package(Threads REQUIRED)
 find_package(JPEG REQUIRED)
@@ -115,11 +117,16 @@ target_link_libraries(pulsar_ui_backend PUBLIC pulsar_core_state pulsar_camera T
 
 add_executable(pulsar-core core/src/main.cpp)
 target_link_libraries(pulsar-core PRIVATE pulsar_ui_backend pulsar_camera pulsar_core_state)
-set_target_properties(pulsar-core PROPERTIES BUILD_RPATH "${GALAXY_ROOT}/lib")
-target_link_options(pulsar-core PRIVATE "-Wl,--disable-new-dtags,-rpath,$ORIGIN/../../camera/vendor/galaxy/lib")
+# Keep the bundled Galaxy SDK discoverable both in the build tree and when the
+# executable is launched from core/build. Using CMake's RPATH properties avoids
+# the previous literal "$$ORIGIN" entry produced by target_link_options.
+set_target_properties(pulsar-core PROPERTIES
+  BUILD_RPATH "$ORIGIN/../../camera/vendor/galaxy/lib"
+  INSTALL_RPATH "$ORIGIN/../../camera/vendor/galaxy/lib")
+target_link_options(pulsar-core PRIVATE "LINKER:--disable-new-dtags")
 if(PULSAR_CUDA_AVAILABLE)
   set_property(TARGET pulsar-core APPEND PROPERTY BUILD_RPATH "${CUDAToolkit_LIBRARY_DIR}")
-  target_link_options(pulsar-core PRIVATE "-Wl,-rpath,${CUDAToolkit_LIBRARY_DIR}")
+  set_property(TARGET pulsar-core APPEND PROPERTY INSTALL_RPATH "${CUDAToolkit_LIBRARY_DIR}")
 endif()
 
 foreach(target pulsar_core_state pulsar_camera pulsar_ui_backend pulsar-core)

@@ -36,8 +36,6 @@ function roleLabel(role: DisplayPortRole) {
       return "AR 1";
     case "ar-glass-2":
       return "AR 2";
-    case "ar-glass-3":
-      return "AR 3";
     default:
       return "Off";
   }
@@ -202,7 +200,6 @@ export function SystemScreen({
                         <option value="display">{roleLabel("display")}</option>
                         <option value="ar-glass-1">{roleLabel("ar-glass-1")}</option>
                         <option value="ar-glass-2">{roleLabel("ar-glass-2")}</option>
-                        <option value="ar-glass-3">{roleLabel("ar-glass-3")}</option>
                       </select>
                     </div>
                   </div>

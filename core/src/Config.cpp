@@ -173,7 +173,7 @@ Config loadConfig(int argc, char** argv) {
                   static_cast<int>(
                       config.cameraMaxHeight)),
               240,
-              2160));
+              4096));
 
   config.cameraSensorScale =
       std::clamp(

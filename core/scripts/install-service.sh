@@ -2,8 +2,10 @@
 set -euo pipefail
 source "$(dirname "$0")/common.sh"
 load_config
+refresh_only=0
+[[ "${1:-}" == "--refresh" ]] && refresh_only=1
 if [[ $EUID -ne 0 ]]; then exec sudo -E "$0" "$@"; fi
-run_user="${SUDO_USER:-$(stat -c '%U' "$PULSAR_ROOT")}"
+run_user="${PULSAR_RUN_USER:-${SUDO_USER:-$(stat -c '%U' "$PULSAR_ROOT")}}"
 if [[ -z "$run_user" || "$run_user" == "root" ]]; then
   run_user="${PULSAR_RUN_USER:-root}"
 fi
@@ -36,6 +38,7 @@ TTYVTDisallocate=yes
 WantedBy=multi-user.target
 UNIT
 
+# PULSAR_BOUNDED_TOUCH_UNIT_V3
 cat >"$touch_unit" <<UNIT
 [Unit]
 Description=Pulsar touchscreen hotplug remapper
@@ -45,6 +48,9 @@ After=pulsar-kiosk.service
 Type=oneshot
 Environment=PULSAR_ROOT=$PULSAR_ROOT
 ExecStart=$PULSAR_ROOT/core/scripts/touch-hotplug-event.sh
+TimeoutStartSec=8
+Nice=10
+IOSchedulingClass=idle
 UNIT
 
 mkdir -p "$dropin_dir"
@@ -56,27 +62,37 @@ After=systemd-user-sessions.service nvidia-persistenced.service
 [Service]
 Environment=PULSAR_ROOT=$PULSAR_ROOT
 ExecStartPre=
-ExecStartPre=$PULSAR_ROOT/core/scripts/pulsar-boot-preflight.sh
 TimeoutStartSec=0
 DROPIN
 
-chmod 0755 \
+for script in \
   "$PULSAR_ROOT/core/scripts/pulsar-boot-preflight.sh" \
   "$PULSAR_ROOT/core/scripts/configure-audio.sh" \
   "$PULSAR_ROOT/core/scripts/configure-network-boot.sh" \
-  "$PULSAR_ROOT/core/scripts/touch-hotplug-event.sh"
+  "$PULSAR_ROOT/core/scripts/touch-hotplug-event.sh"; do
+  [[ ! -f "$script" ]] || chmod 0755 "$script"
+done
 
 install -m 0644 "$PULSAR_ROOT/core/config/99-pulsar-touch-hotplug.rules" "$touch_rule"
 
 systemctl daemon-reload
 systemctl enable pulsar-kiosk.service
-"$PULSAR_ROOT/core/scripts/configure-network-boot.sh" || true
+
+# PULSAR_ALWAYS_REFRESH_TOUCH_V2
+# Touch rules and HID modules must also be refreshed during normal deploys.
+modprobe usbhid 2>/dev/null || true
+modprobe hid_multitouch 2>/dev/null || true
+# PULSAR_SAFE_TOUCH_REFRESH_V3
 udevadm control --reload-rules || true
-udevadm trigger --subsystem-match=usb || true
-udevadm trigger --subsystem-match=input || true
-systemctl start pulsar-touch-hotplug.service || true
+udevadm trigger --subsystem-match=input --action=add || true
+timeout 8 systemctl start pulsar-touch-hotplug.service || true
+
+if ((refresh_only == 0)); then
+  "$PULSAR_ROOT/core/scripts/configure-network-boot.sh" || true
+fi
+
 if systemctl is-enabled --quiet display-manager.service 2>/dev/null; then
   systemctl disable --now display-manager.service || true
 fi
 systemctl disable --now getty@tty1.service 2>/dev/null || true
-log "Installed pulsar-kiosk.service and pulsar-touch-hotplug.service for user $run_user."
+log "Installed/refreshed pulsar-kiosk.service for user $run_user at $PULSAR_ROOT."
