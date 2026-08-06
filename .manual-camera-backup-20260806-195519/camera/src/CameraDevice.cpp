@@ -1226,7 +1226,7 @@ void CameraDevice::applyControls(const core::CameraControls& controls, bool forc
   applyLowLatencyAcquisitionSetup(device_, targetFps_);
 
   // ExposureAuto = controls.autoExposure
-  setExposureAutoEnabled(device_, false);
+  setExposureAutoEnabled(device_, controls.autoExposure);
 
   // Gain must be manual; otherwise the requested gain may be overwritten.
   setEnum(device_, "GainAuto", "Off");
@@ -1242,7 +1242,9 @@ void CameraDevice::applyControls(const core::CameraControls& controls, bool forc
   setFloat(device_, "BlackLevel", 1.0);
 
   // ExposureTime = controls.exposureUs microseconds
-  setFloat(device_, "ExposureTime", controls.exposureUs);
+  if (!controls.autoExposure) {
+    setFloat(device_, "ExposureTime", controls.exposureUs);
+  }
 
   // AutoExposureTimeMin = 8 microseconds
   setFloat(device_, "AutoExposureTimeMin", 8.0);

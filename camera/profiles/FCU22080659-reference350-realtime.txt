@@ -31,7 +31,7 @@ ChunkEnable	0
 ChunkSelector	CounterValue
 ChunkEnable	0
 ChunkSelector	FrameID
-ExposureTime	30000
+ExposureTime	3400
 AcquisitionFrameRateMode	Off
 AcquisitionFrameRate	32.3
 SensorShutterMode	Rolling
@@ -140,7 +140,7 @@ EventSelector	FrameBurstStartOvertrigger
 EventNotification	Off
 EventSelector	ExposureEnd
 GainSelector	AnalogAll
-Gain	0
+Gain	5
 GainSelector	AnalogAll
 GainSelector	AnalogAll
 GainAuto	Off

@@ -31,7 +31,7 @@ ChunkEnable	0
 ChunkSelector	CounterValue
 ChunkEnable	0
 ChunkSelector	FrameID
-ExposureTime	3400
+ExposureTime	30000
 AcquisitionFrameRateMode	Off
 AcquisitionFrameRate	32.3
 SensorShutterMode	Rolling
@@ -140,7 +140,7 @@ EventSelector	FrameBurstStartOvertrigger
 EventNotification	Off
 EventSelector	ExposureEnd
 GainSelector	AnalogAll
-Gain	5
+Gain	0
 GainSelector	AnalogAll
 GainSelector	AnalogAll
 GainAuto	Off
@@ -189,7 +189,7 @@ StreamSelector	0
 # {05D8C294-F295-4dfb-9D01-096BD04049F4}
 # GenApi persistence file (version 3.0.2)
 # Device = ::USB3VisionTL -- TLDataStream RegisterMap -- Device version = 1.0.2 -- Product GUID = 62468F13-89FE-499c-88D9-AF83888F71FB -- Product version GUID = 4F738550-9C42-477B-BB0D-407E7638DC09
-StreamBufferHandlingMode	NewestOnly
+StreamBufferHandlingMode	OldestFirst
 StreamTransferSize	1048576
 StreamTransferNumberUrb	200
 AcquisitionBufferCachePrec	40

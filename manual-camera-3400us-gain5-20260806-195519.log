@@ -1,0 +1,19 @@
+PULSAR LOCAL RUN LOG: /home/matin/Music/Pulsar-Cpp-Core-observable-realtime-v9-20260806-before-realtime-fix/diagnostics/live/run-20260806-195519
+
+========== REMOTE-ONLY DEPLOYMENT ==========
+[1;36m[Pulsar][0m This computer only commits, pushes and transfers source; CUDA build runs on pulsar.
+
+========== REMOTE PREFLIGHT ==========
+[1;36m[Pulsar][0m Remote CUDA/build target is ready: matin@192.168.1.123:/home/matin/Pulsar-Cpp-Core
+
+========== GITHUB CONNECTION ==========
+Remote: origin -> ssh://git@ssh.github.com:443/matinlotfii/Pulsar-Cpp-Core.git
+
+========== STAGE PROJECT CHANGES ==========
+ M camera/profiles/FCU22080658-reference350-realtime.txt
+ M camera/profiles/FCU22080659-reference350-realtime.txt
+ M camera/src/CameraDevice.cpp
+ M core/config/pulsar.env
+ M ui/backend/src/HttpServer.cpp
+?? .manual-camera-backup-20260806-195519/
+?? manual-camera-3400us-gain5-20260806-195519.log
