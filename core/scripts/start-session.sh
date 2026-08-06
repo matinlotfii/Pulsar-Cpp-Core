@@ -336,27 +336,17 @@ core_command=(
 )
 
 if [[ "${PULSAR_CORE_NVIDIA_OFFLOAD:-0}" == "1" ]]; then
-  requested_provider="${PULSAR_CORE_NVIDIA_PROVIDER:-NVIDIA-G0}"
-  detected_provider="$(xrandr --listproviders 2>/dev/null | sed -n 's/.*name:\(.*NVIDIA[^ ]*\).*/\1/p' | head -n1 || true)"
-  selected_provider="$requested_provider"
-  if ! xrandr --listproviders 2>/dev/null | grep -Fq "name:${selected_provider}"; then
-    selected_provider="$detected_provider"
-  fi
-  if [[ -n "$selected_provider" ]]; then
-    core_command=(
-      env
-      __NV_PRIME_RENDER_OFFLOAD=1
-      __NV_PRIME_RENDER_OFFLOAD_PROVIDER="$selected_provider"
-      __GLX_VENDOR_LIBRARY_NAME=nvidia
-      __GL_SYNC_TO_VBLANK=0
-      __GL_MaxFramesAllowed=1
-      "${core_command[@]}"
-    )
-    printf '%s\n' "Pulsar core NVIDIA PRIME offload enabled: $selected_provider" >>"$PULSAR_LOG_FILE"
-  else
-    printf '%s\n' "Pulsar core NVIDIA PRIME offload requested but no NVIDIA provider was found; using default GL provider." >>"$PULSAR_LOG_FILE"
-  fi
+  core_command=(
+    env
+    __NV_PRIME_RENDER_OFFLOAD=1
+    __NV_PRIME_RENDER_OFFLOAD_PROVIDER="${PULSAR_CORE_NVIDIA_PROVIDER:-NVIDIA-G0}"
+    __GLX_VENDOR_LIBRARY_NAME=nvidia
+    "${core_command[@]}"
+  )
+
+  printf '%s\n'     "Pulsar core NVIDIA PRIME offload enabled: ${PULSAR_CORE_NVIDIA_PROVIDER:-NVIDIA-G0}"     >>"$PULSAR_LOG_FILE"
 fi
+
 nohup "${core_command[@]}" >>"$PULSAR_LOG_FILE" 2>&1 &
 core_pid=$!
 echo "$core_pid" >"$PULSAR_PID_FILE"
@@ -388,11 +378,7 @@ browser_flags=(
   --enable-features=UseOzonePlatform --ozone-platform=x11 --use-gl=angle --use-angle=gl
   --touch-events=enabled
 )
-if [[ "${PULSAR_BROWSER_SOFTWARE_COMPOSITOR:-0}" == "1" ]]; then
-  browser_flags+=(--disable-gpu --disable-gpu-compositing)
-elif [[ "${PULSAR_BROWSER_GPU:-1}" == "1" ]]; then
-  browser_flags+=(--enable-gpu-rasterization --enable-zero-copy --enable-accelerated-2d-canvas --ignore-gpu-blocklist)
-fi
+[[ "${PULSAR_BROWSER_GPU:-1}" == "1" ]] && browser_flags+=(--enable-gpu-rasterization --enable-zero-copy)
 [[ $EUID -eq 0 ]] && browser_flags+=(--no-sandbox)
 
 if [[ "${PULSAR_HIDE_CURSOR:-1}" == "1" ]] && [[ -x "$PULSAR_ROOT/core/scripts/hide-cursor.sh" ]]; then

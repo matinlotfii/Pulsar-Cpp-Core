@@ -456,276 +456,36 @@ void CameraDevice::loop() {
     return;
   }
 
-  // V10 pipeline: acquisition and processing run independently. The capture
-  // thread copies the newest SDK buffer into a three-slot latest-only ring and
-  // requeues Galaxy buffers immediately. A second thread performs CUDA/NPP and
-  // publish work, so USB acquisition can overlap processing instead of adding
-  // both costs serially to every frame period.
-  enum class SlotState { Free, Writing, Ready, Processing };
-  struct RawSlot {
-    std::vector<uint8_t> bytes;
-    GX_FRAME_BUFFER frame{};
-    FrameTiming timing{};
-    SlotState state = SlotState::Free;
-    uint64_t sequence = 0;
-    double dequeueMs = 0.0;
-    double rawCopyMs = 0.0;
-  };
+  // Low-latency policy: dequeue every frame currently waiting in the SDK,
+  // keep only the newest successful frame, return all SDK buffers immediately,
+  // then process the private raw copy. This prevents a growing backlog.
+  constexpr uint32_t kAcquisitionBufferCount = 4;
+  std::array<PGX_FRAME_BUFFER, kAcquisitionBufferCount> readyBuffers{};
+  std::vector<uint8_t> rawCopy;
+  GX_FRAME_BUFFER copiedFrame{};
 
-  constexpr uint32_t kSdkReadyCapacity = 4;
-  constexpr size_t kPipelineSlotCount = 3;
-  std::array<PGX_FRAME_BUFFER, kSdkReadyCapacity> readyBuffers{};
-  std::array<RawSlot, kPipelineSlotCount> slots{};
-  std::mutex pipelineMutex;
-  std::condition_variable pipelineCv;
-  std::atomic<uint64_t> sdkAcquiredFrames{0};
-  std::atomic<uint64_t> sdkStaleDropped{0};
-  std::atomic<uint64_t> queueDropped{0};
-  uint64_t captureSequence = 0;
+  uint64_t processedFrames = 0;
+  uint64_t reportProcessedFrames = 0;
+  uint64_t reportAcquiredFrames = 0;
+  uint64_t reportDroppedStaleFrames = 0;
 
-  const auto durationMs = [](auto duration) {
-    return std::chrono::duration<double, std::milli>(duration).count();
-  };
+  double dequeueMsSum = 0.0;
+  double rawCopyMsSum = 0.0;
+  double convertMsSum = 0.0;
+  double publishMsSum = 0.0;
+  double totalMsSum = 0.0;
+  double totalMsMax = 0.0;
 
-  std::thread processor([&] {
-    pthread_setname_np(pthread_self(), slot_ == 0 ? "pulsar-gpu-l" : "pulsar-gpu-r");
-    bestEffortRealtime(-4, 15);
+  uint64_t reportGpuFrames = 0;
+  double gpuH2dMsSum = 0.0;
+  double gpuDebayerMsSum = 0.0;
+  double gpuResizeMsSum = 0.0;
+  double gpuD2hMsSum = 0.0;
+  double gpuTotalMsSum = 0.0;
+  double gpuTotalMsMax = 0.0;
 
-    uint64_t processedFrames = 0;
-    uint64_t reportProcessedFrames = 0;
-    uint64_t reportGpuFrames = 0;
-    double dequeueMsSum = 0.0;
-    double rawCopyMsSum = 0.0;
-    double queueWaitMsSum = 0.0;
-    double stageMsSum = 0.0;
-    double processMsSum = 0.0;
-    double publishMsSum = 0.0;
-    double totalMsSum = 0.0;
-    double totalMsMax = 0.0;
-    double gpuH2dMsSum = 0.0;
-    double gpuDebayerMsSum = 0.0;
-    double gpuResizeMsSum = 0.0;
-    double gpuD2hMsSum = 0.0;
-    double gpuTotalMsSum = 0.0;
-    double gpuTotalMsMax = 0.0;
-    auto fpsStart = std::chrono::steady_clock::now();
-    auto reportStart = fpsStart;
-
-    while (true) {
-      size_t selected = slots.size();
-      {
-        std::unique_lock<std::mutex> lock(pipelineMutex);
-        pipelineCv.wait(lock, [&] {
-          if (!running_) return true;
-          for (const auto& slot : slots) {
-            if (slot.state == SlotState::Ready) return true;
-          }
-          return false;
-        });
-
-        uint64_t newestSequence = 0;
-        for (size_t index = 0; index < slots.size(); ++index) {
-          if (slots[index].state == SlotState::Ready &&
-              (selected == slots.size() || slots[index].sequence > newestSequence)) {
-            selected = index;
-            newestSequence = slots[index].sequence;
-          }
-        }
-
-        if (selected == slots.size()) {
-          if (!running_) break;
-          continue;
-        }
-
-        // Drop queued frames older than the newest one. This ring never builds
-        // latency: it trades an obsolete frame for the freshest available one.
-        for (size_t index = 0; index < slots.size(); ++index) {
-          if (index != selected && slots[index].state == SlotState::Ready) {
-            slots[index].state = SlotState::Free;
-            queueDropped.fetch_add(1, std::memory_order_relaxed);
-          }
-        }
-        slots[selected].state = SlotState::Processing;
-      }
-
-      RawSlot& job = slots[selected];
-      const auto processingStart = std::chrono::steady_clock::now();
-      const double queueWaitMs = job.timing.hostRawCopyDoneNs == 0
-          ? 0.0
-          : static_cast<double>(steadyNs(processingStart) -
-                                job.timing.hostRawCopyDoneNs) / 1'000'000.0;
-
-      bool published = false;
-      bool gpuFrame = false;
-      GpuBayerTimings gpuTimings{};
-      auto stageEnd = processingStart;
-      auto convertEnd = processingStart;
-      auto publishEnd = processingStart;
-
-      const bool canUseGpu = gpuRequested_ && !gpuDisabledAfterFailure_ &&
-                             gpuPipeline_ != nullptr &&
-                             bayer8(job.frame.nPixelFormat);
-      if (canUseGpu) {
-        std::string gpuError;
-        const bool staged = gpuPipeline_->stageInput(
-            job.bytes.data(), job.bytes.size(), gpuError);
-        stageEnd = std::chrono::steady_clock::now();
-
-        BayerPattern pattern = BayerPattern::Rggb;
-        const uint32_t sourceWidth = static_cast<uint32_t>(job.frame.nWidth);
-        const uint32_t sourceHeight = static_cast<uint32_t>(job.frame.nHeight);
-        const auto [outputWidth, outputHeight] =
-            fitOutputSize(sourceWidth, sourceHeight, maxWidth_, maxHeight_);
-        const uint8_t* gpuOutput = nullptr;
-        std::size_t gpuOutputBytes = 0;
-
-        if (staged &&
-            gpuPatternFor(job.frame.nPixelFormat, colorFilter_, pattern) &&
-            gpuPipeline_->processStaged(
-                sourceWidth, sourceHeight, pattern,
-                outputWidth, outputHeight,
-                gpuOutput, gpuOutputBytes,
-                gpuTimings, gpuError)) {
-          convertEnd = std::chrono::steady_clock::now();
-          job.timing.hostDebayerDoneNs = steadyNs(convertEnd);
-          publish(outputWidth, outputHeight, gpuOutput, gpuOutputBytes,
-                  true, job.timing);
-          publishEnd = std::chrono::steady_clock::now();
-          published = true;
-          gpuFrame = true;
-        } else {
-          gpuDisabledAfterFailure_ = true;
-          std::cerr << label_
-                    << ": GPU pipeline disabled; CPU fallback active: "
-                    << (gpuError.empty() ? "unsupported Bayer pattern" : gpuError)
-                    << '\n';
-        }
-      }
-
-      if (!published) {
-        job.frame.pImgBuf = job.bytes.data();
-        const bool converted = convert(&job.frame, rgb_);
-        convertEnd = std::chrono::steady_clock::now();
-        stageEnd = processingStart;
-        if (converted) {
-          job.timing.hostDebayerDoneNs = steadyNs(convertEnd);
-          publish(static_cast<uint32_t>(job.frame.nWidth),
-                  static_cast<uint32_t>(job.frame.nHeight),
-                  rgb_, true, job.timing);
-          publishEnd = std::chrono::steady_clock::now();
-          published = true;
-        }
-      }
-
-      if (published) {
-        ++processedFrames;
-        ++reportProcessedFrames;
-        if (gpuFrame) {
-          ++reportGpuFrames;
-          gpuH2dMsSum += gpuTimings.hostToDeviceMs;
-          gpuDebayerMsSum += gpuTimings.debayerMs;
-          gpuResizeMsSum += gpuTimings.resizeMs;
-          gpuD2hMsSum += gpuTimings.deviceToHostMs;
-          gpuTotalMsSum += gpuTimings.totalMs;
-          gpuTotalMsMax = std::max(gpuTotalMsMax, gpuTimings.totalMs);
-        }
-
-        const double stageMs = durationMs(stageEnd - processingStart);
-        const double processMs = durationMs(convertEnd - stageEnd);
-        const double publishMs = durationMs(publishEnd - convertEnd);
-        const double totalMs = job.timing.hostDequeueNs == 0
-            ? durationMs(publishEnd - processingStart)
-            : static_cast<double>(steadyNs(publishEnd) -
-                                  job.timing.hostDequeueNs) / 1'000'000.0;
-        dequeueMsSum += job.dequeueMs;
-        rawCopyMsSum += job.rawCopyMs;
-        queueWaitMsSum += queueWaitMs;
-        stageMsSum += stageMs;
-        processMsSum += processMs;
-        publishMsSum += publishMs;
-        totalMsSum += totalMs;
-        totalMsMax = std::max(totalMsMax, totalMs);
-      }
-
-      {
-        std::lock_guard<std::mutex> lock(pipelineMutex);
-        job.state = SlotState::Free;
-      }
-      pipelineCv.notify_one();
-
-      const auto now = std::chrono::steady_clock::now();
-      const std::chrono::duration<double> fpsElapsed = now - fpsStart;
-      if (fpsElapsed.count() >= 1.0) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        status_.fps = static_cast<double>(processedFrames) / fpsElapsed.count();
-        processedFrames = 0;
-        fpsStart = now;
-      }
-
-      const std::chrono::duration<double> reportElapsed = now - reportStart;
-      if (reportElapsed.count() >= 2.0) {
-        const uint64_t acquired =
-            sdkAcquiredFrames.exchange(0, std::memory_order_relaxed);
-        const uint64_t sdkDropped =
-            sdkStaleDropped.exchange(0, std::memory_order_relaxed);
-        const uint64_t pipelineDropped =
-            queueDropped.exchange(0, std::memory_order_relaxed);
-        const double divisor =
-            static_cast<double>(std::max<uint64_t>(1, reportProcessedFrames));
-
-        std::cerr << label_ << ": latency-stats"
-                  << " pipeline="
-                  << (reportGpuFrames == reportProcessedFrames && reportGpuFrames > 0
-                          ? "gpu-overlapped"
-                          : (reportGpuFrames > 0 ? "mixed-overlapped" : "cpu-overlapped"))
-                  << " output-fps="
-                  << (static_cast<double>(reportProcessedFrames) /
-                      reportElapsed.count())
-                  << " acquired-fps="
-                  << (static_cast<double>(acquired) / reportElapsed.count())
-                  << " stale-dropped=" << (sdkDropped + pipelineDropped)
-                  << " sdk-stale-dropped=" << sdkDropped
-                  << " queue-dropped=" << pipelineDropped
-                  << " dequeue-wait-ms=" << (dequeueMsSum / divisor)
-                  << " raw-copy-ms=" << (rawCopyMsSum / divisor)
-                  << " queue-wait-ms=" << (queueWaitMsSum / divisor)
-                  << " stage-ms=" << (stageMsSum / divisor)
-                  << " process-ms=" << (processMsSum / divisor)
-                  << " publish-ms=" << (publishMsSum / divisor)
-                  << " host-pipeline-ms=" << (totalMsSum / divisor)
-                  << " host-pipeline-max-ms=" << totalMsMax;
-
-        if (reportGpuFrames > 0) {
-          const double gpuDivisor = static_cast<double>(reportGpuFrames);
-          std::cerr << " gpu-h2d-ms=" << (gpuH2dMsSum / gpuDivisor)
-                    << " gpu-debayer-ms=" << (gpuDebayerMsSum / gpuDivisor)
-                    << " gpu-resize-ms=" << (gpuResizeMsSum / gpuDivisor)
-                    << " gpu-d2h-ms=" << (gpuD2hMsSum / gpuDivisor)
-                    << " gpu-total-ms=" << (gpuTotalMsSum / gpuDivisor)
-                    << " gpu-total-max-ms=" << gpuTotalMsMax;
-        }
-        std::cerr << '\n';
-
-        reportProcessedFrames = 0;
-        reportGpuFrames = 0;
-        dequeueMsSum = 0.0;
-        rawCopyMsSum = 0.0;
-        queueWaitMsSum = 0.0;
-        stageMsSum = 0.0;
-        processMsSum = 0.0;
-        publishMsSum = 0.0;
-        totalMsSum = 0.0;
-        totalMsMax = 0.0;
-        gpuH2dMsSum = 0.0;
-        gpuDebayerMsSum = 0.0;
-        gpuResizeMsSum = 0.0;
-        gpuD2hMsSum = 0.0;
-        gpuTotalMsSum = 0.0;
-        gpuTotalMsMax = 0.0;
-        reportStart = now;
-      }
-    }
-  });
+  auto fpsStart = std::chrono::steady_clock::now();
+  auto reportStart = fpsStart;
 
   while (running_) {
     if (device_ == nullptr && !connect()) {
@@ -739,9 +499,10 @@ void CameraDevice::loop() {
     readyBuffers.fill(nullptr);
     uint32_t readyCount = 0;
     const auto dequeueStart = std::chrono::steady_clock::now();
-    const GX_STATUS dequeueStatus = GXDQAllBufs(
-        device_, readyBuffers.data(),
-        static_cast<uint32_t>(readyBuffers.size()), &readyCount, 1000);
+    const GX_STATUS dequeueStatus =
+        GXDQAllBufs(device_, readyBuffers.data(),
+                    static_cast<uint32_t>(readyBuffers.size()),
+                    &readyCount, 1000);
     const auto dequeueEnd = std::chrono::steady_clock::now();
 
     if (dequeueStatus != GX_STATUS_SUCCESS || readyCount == 0) {
@@ -753,14 +514,11 @@ void CameraDevice::loop() {
       continue;
     }
 
-    sdkAcquiredFrames.fetch_add(readyCount, std::memory_order_relaxed);
-    if (readyCount > 1) {
-      sdkStaleDropped.fetch_add(readyCount - 1u, std::memory_order_relaxed);
-    }
+    reportAcquiredFrames += readyCount;
 
     PGX_FRAME_BUFFER newest = nullptr;
-    for (uint32_t index = readyCount; index > 0; --index) {
-      PGX_FRAME_BUFFER candidate = readyBuffers[index - 1u];
+    for (uint32_t i = readyCount; i > 0; --i) {
+      PGX_FRAME_BUFFER candidate = readyBuffers[i - 1];
       if (candidate != nullptr &&
           candidate->nStatus == GX_FRAME_STATUS_SUCCESS &&
           candidate->pImgBuf != nullptr && candidate->nImgSize > 0) {
@@ -769,76 +527,210 @@ void CameraDevice::loop() {
       }
     }
 
-    size_t selected = slots.size();
-    if (newest != nullptr) {
-      std::lock_guard<std::mutex> lock(pipelineMutex);
-      for (size_t index = 0; index < slots.size(); ++index) {
-        if (slots[index].state == SlotState::Free) {
-          selected = index;
-          break;
-        }
-      }
-      if (selected == slots.size()) {
-        uint64_t oldestSequence = UINT64_MAX;
-        for (size_t index = 0; index < slots.size(); ++index) {
-          if (slots[index].state == SlotState::Ready &&
-              slots[index].sequence < oldestSequence) {
-            selected = index;
-            oldestSequence = slots[index].sequence;
-          }
-        }
-        if (selected != slots.size()) {
-          queueDropped.fetch_add(1, std::memory_order_relaxed);
-        }
-      }
-      if (selected != slots.size()) {
-        slots[selected].state = SlotState::Writing;
-      }
-    }
+    const uint64_t staleNow = readyCount > 1 ? readyCount - 1u : 0u;
+    reportDroppedStaleFrames += staleNow;
 
+    bool havePrivateFrame = false;
+    bool gpuInputStaged = false;
+    std::string gpuStageError;
     const auto copyStart = std::chrono::steady_clock::now();
-    if (newest != nullptr && selected != slots.size()) {
-      RawSlot& slot = slots[selected];
-      slot.bytes.resize(static_cast<size_t>(newest->nImgSize));
-      std::memcpy(slot.bytes.data(), newest->pImgBuf, slot.bytes.size());
-      slot.frame = *newest;
-      slot.frame.pImgBuf = slot.bytes.data();
-      slot.timing = {};
-      slot.timing.cameraFrameId = newest->nFrameID;
-      slot.timing.cameraTimestamp = newest->nTimestamp;
-      slot.timing.hostDequeueNs = steadyNs(dequeueEnd);
-    } else if (newest != nullptr) {
-      queueDropped.fetch_add(1, std::memory_order_relaxed);
+    if (newest != nullptr) {
+      copiedFrame = *newest;
+
+      const bool canStageGpu =
+          gpuRequested_ && !gpuDisabledAfterFailure_ &&
+          gpuPipeline_ != nullptr && bayer8(newest->nPixelFormat);
+
+      if (canStageGpu && gpuPipeline_->stageInput(
+                             static_cast<const uint8_t*>(newest->pImgBuf),
+                             static_cast<std::size_t>(newest->nImgSize),
+                             gpuStageError)) {
+        copiedFrame.pImgBuf = nullptr;
+        gpuInputStaged = true;
+        havePrivateFrame = true;
+      } else {
+        if (canStageGpu) {
+          gpuDisabledAfterFailure_ = true;
+          std::cerr << label_
+                    << ": GPU pinned-input staging failed; CPU fallback active: "
+                    << gpuStageError << '\n';
+        }
+
+        rawCopy.resize(static_cast<size_t>(newest->nImgSize));
+        std::memcpy(rawCopy.data(), newest->pImgBuf, rawCopy.size());
+        copiedFrame.pImgBuf = rawCopy.data();
+        havePrivateFrame = true;
+      }
     }
     const auto copyEnd = std::chrono::steady_clock::now();
 
+    // Return all Galaxy SDK buffers before CPU debayer/resize starts so the
+    // camera can continue acquiring into its fixed buffer pool.
     if (GXQAllBufs(device_) != GX_STATUS_SUCCESS) {
-      if (selected != slots.size()) {
-        std::lock_guard<std::mutex> lock(pipelineMutex);
-        slots[selected].state = SlotState::Free;
-      }
       fail("camera buffer requeue failed; reconnecting");
       close();
       std::this_thread::sleep_for(std::chrono::milliseconds(250));
       continue;
     }
 
-    if (selected != slots.size()) {
-      RawSlot& slot = slots[selected];
-      slot.timing.hostRawCopyDoneNs = steadyNs(copyEnd);
-      slot.dequeueMs = durationMs(dequeueEnd - dequeueStart);
-      slot.rawCopyMs = durationMs(copyEnd - copyStart);
-      {
-        std::lock_guard<std::mutex> lock(pipelineMutex);
-        slot.sequence = ++captureSequence;
-        slot.state = SlotState::Ready;
+    bool published = false;
+    GpuBayerTimings gpuTimings{};
+    auto convertEnd = copyEnd;
+    auto publishEnd = copyEnd;
+    if (havePrivateFrame) {
+      FrameTiming timing{};
+      timing.cameraFrameId = copiedFrame.nFrameID;
+      timing.cameraTimestamp = copiedFrame.nTimestamp;
+      timing.hostDequeueNs = steadyNs(dequeueEnd);
+      timing.hostRawCopyDoneNs = steadyNs(copyEnd);
+
+      if (gpuRequested_ && !gpuDisabledAfterFailure_ && gpuPipeline_ != nullptr &&
+          bayer8(copiedFrame.nPixelFormat)) {
+        BayerPattern pattern = BayerPattern::Rggb;
+        const uint32_t sourceWidth = static_cast<uint32_t>(copiedFrame.nWidth);
+        const uint32_t sourceHeight = static_cast<uint32_t>(copiedFrame.nHeight);
+        const auto [outputWidth, outputHeight] =
+            fitOutputSize(sourceWidth, sourceHeight, maxWidth_, maxHeight_);
+        std::string gpuError;
+        const uint8_t* gpuOutput = nullptr;
+        std::size_t gpuOutputBytes = 0;
+
+        if (gpuInputStaged &&
+            gpuPatternFor(copiedFrame.nPixelFormat, colorFilter_, pattern) &&
+            gpuPipeline_->processStaged(
+                sourceWidth,
+                sourceHeight,
+                pattern,
+                outputWidth,
+                outputHeight,
+                gpuOutput,
+                gpuOutputBytes,
+                gpuTimings,
+                gpuError)) {
+          convertEnd = std::chrono::steady_clock::now();
+          timing.hostDebayerDoneNs = steadyNs(convertEnd);
+          publish(
+              outputWidth,
+              outputHeight,
+              gpuOutput,
+              gpuOutputBytes,
+              true,
+              timing);
+          publishEnd = std::chrono::steady_clock::now();
+          published = true;
+          ++reportGpuFrames;
+          gpuH2dMsSum += gpuTimings.hostToDeviceMs;
+          gpuDebayerMsSum += gpuTimings.debayerMs;
+          gpuResizeMsSum += gpuTimings.resizeMs;
+          gpuD2hMsSum += gpuTimings.deviceToHostMs;
+          gpuTotalMsSum += gpuTimings.totalMs;
+          gpuTotalMsMax = std::max(gpuTotalMsMax, gpuTimings.totalMs);
+        } else {
+          gpuDisabledAfterFailure_ = true;
+          std::cerr << label_ << ": GPU pipeline disabled; CPU fallback active: "
+                    << (gpuError.empty() ? "unsupported Bayer pattern" : gpuError)
+                    << '\n';
+        }
       }
-      pipelineCv.notify_one();
+
+      // A staged GPU frame no longer owns a CPU raw copy. If GPU processing
+      // fails, drop this one frame; the next iteration uses CPU fallback after
+      // gpuDisabledAfterFailure_ has been set.
+      if (!published && !gpuInputStaged) {
+        const bool converted = convert(&copiedFrame, rgb_);
+        convertEnd = std::chrono::steady_clock::now();
+        if (converted) {
+          timing.hostDebayerDoneNs = steadyNs(convertEnd);
+          publish(static_cast<uint32_t>(copiedFrame.nWidth),
+                  static_cast<uint32_t>(copiedFrame.nHeight), rgb_, true, timing);
+          publishEnd = std::chrono::steady_clock::now();
+          published = true;
+        }
+      }
+
+      if (published) {
+        ++processedFrames;
+        ++reportProcessedFrames;
+      }
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto ms = [](auto duration) {
+      return std::chrono::duration<double, std::milli>(duration).count();
+    };
+
+    if (published) {
+      const double dequeueMs = ms(dequeueEnd - dequeueStart);
+      const double copyMs = ms(copyEnd - copyStart);
+      const double convertMs = ms(convertEnd - copyEnd);
+      const double publishMs = ms(publishEnd - convertEnd);
+      const double totalMs = ms(publishEnd - dequeueEnd);
+      dequeueMsSum += dequeueMs;
+      rawCopyMsSum += copyMs;
+      convertMsSum += convertMs;
+      publishMsSum += publishMs;
+      totalMsSum += totalMs;
+      totalMsMax = std::max(totalMsMax, totalMs);
+    }
+
+    const std::chrono::duration<double> fpsElapsed = now - fpsStart;
+    if (fpsElapsed.count() >= 1.0) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      status_.fps = static_cast<double>(processedFrames) / fpsElapsed.count();
+      processedFrames = 0;
+      fpsStart = now;
+    }
+
+    const std::chrono::duration<double> reportElapsed = now - reportStart;
+    if (reportElapsed.count() >= 2.0) {
+      const double divisor = static_cast<double>(std::max<uint64_t>(1, reportProcessedFrames));
+      std::cerr << label_ << ": latency-stats"
+                << " pipeline="
+                << (reportGpuFrames == reportProcessedFrames && reportGpuFrames > 0
+                        ? "gpu"
+                        : (reportGpuFrames > 0 ? "mixed" : "cpu"))
+                << " output-fps="
+                << (static_cast<double>(reportProcessedFrames) / reportElapsed.count())
+                << " acquired-fps="
+                << (static_cast<double>(reportAcquiredFrames) / reportElapsed.count())
+                << " stale-dropped=" << reportDroppedStaleFrames
+                << " dequeue-wait-ms=" << (dequeueMsSum / divisor)
+                << " raw-copy-ms=" << (rawCopyMsSum / divisor)
+                << " process-ms=" << (convertMsSum / divisor)
+                << " publish-ms=" << (publishMsSum / divisor)
+                << " host-pipeline-ms=" << (totalMsSum / divisor)
+                << " host-pipeline-max-ms=" << totalMsMax;
+
+      if (reportGpuFrames > 0) {
+        const double gpuDivisor = static_cast<double>(reportGpuFrames);
+        std::cerr << " gpu-h2d-ms=" << (gpuH2dMsSum / gpuDivisor)
+                  << " gpu-debayer-ms=" << (gpuDebayerMsSum / gpuDivisor)
+                  << " gpu-resize-ms=" << (gpuResizeMsSum / gpuDivisor)
+                  << " gpu-d2h-ms=" << (gpuD2hMsSum / gpuDivisor)
+                  << " gpu-total-ms=" << (gpuTotalMsSum / gpuDivisor)
+                  << " gpu-total-max-ms=" << gpuTotalMsMax;
+      }
+      std::cerr << '\n';
+
+      reportProcessedFrames = 0;
+      reportAcquiredFrames = 0;
+      reportDroppedStaleFrames = 0;
+      dequeueMsSum = 0.0;
+      rawCopyMsSum = 0.0;
+      convertMsSum = 0.0;
+      publishMsSum = 0.0;
+      totalMsSum = 0.0;
+      totalMsMax = 0.0;
+      reportGpuFrames = 0;
+      gpuH2dMsSum = 0.0;
+      gpuDebayerMsSum = 0.0;
+      gpuResizeMsSum = 0.0;
+      gpuD2hMsSum = 0.0;
+      gpuTotalMsSum = 0.0;
+      gpuTotalMsMax = 0.0;
+      reportStart = now;
     }
   }
-
-  pipelineCv.notify_all();
-  if (processor.joinable()) processor.join();
 }
 
 void CameraDevice::mockLoop() {

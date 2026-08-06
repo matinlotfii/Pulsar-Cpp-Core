@@ -98,7 +98,7 @@ function CameraLiveView({
     let controller: AbortController | null = null;
     let context: CanvasRenderingContext2D | null = null;
     let pendingBitmap: PendingBitmap | null = null;
-    let drawScheduled = false;
+    let drawRequest = 0;
     let localDropped = 0;
     let status: CameraStreamStatus = "connecting";
     let frameVisible = false;
@@ -117,7 +117,7 @@ function CameraLiveView({
     };
 
     const drawLatest = () => {
-      drawScheduled = false;
+      drawRequest = 0;
       const frame = pendingBitmap;
       pendingBitmap = null;
       if (!frame || stopped) {
@@ -166,9 +166,8 @@ function CameraLiveView({
       });
       localDropped = 0;
 
-      if (pendingBitmap && !drawScheduled) {
-        drawScheduled = true;
-        queueMicrotask(drawLatest);
+      if (pendingBitmap && drawRequest === 0) {
+        drawRequest = window.requestAnimationFrame(drawLatest);
       }
     };
 
@@ -186,10 +185,7 @@ function CameraLiveView({
         localDropped += 1;
       }
       pendingBitmap = event.data;
-      if (!drawScheduled) {
-        drawScheduled = true;
-        queueMicrotask(drawLatest);
-      }
+      if (drawRequest === 0) drawRequest = window.requestAnimationFrame(drawLatest);
     };
 
     worker.onerror = () => updateStatus("offline");
@@ -239,6 +235,7 @@ function CameraLiveView({
       stopped = true;
       controller?.abort();
       worker.terminate();
+      if (drawRequest !== 0) window.cancelAnimationFrame(drawRequest);
       pendingBitmap?.bitmap.close();
     };
   }, [cameraIndex]);

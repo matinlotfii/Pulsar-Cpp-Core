@@ -1,0 +1,26 @@
+PULSAR LOCAL RUN LOG: /home/matin/.local/share/Trash/files/Pulsar-Cpp-Core-observable-realtime-v9-20260806/diagnostics/live/run-20260806-192228
+
+========== REMOTE-ONLY DEPLOYMENT ==========
+[1;36m[Pulsar][0m This computer only commits, pushes and transfers source; CUDA build runs on pulsar.
+
+========== REMOTE PREFLIGHT ==========
+[1;36m[Pulsar][0m Remote CUDA/build target is ready: matin@192.168.1.123:/home/matin/Pulsar-Cpp-Core
+
+========== GITHUB CONNECTION ==========
+Remote: origin -> ssh://git@ssh.github.com:443/matinlotfii/Pulsar-Cpp-Core.git
+
+========== STAGE PROJECT CHANGES ==========
+ D CAMERA_LOW_LATENCY_VALIDATION_FA.md
+ D CLEAN_REPLACE_DEPLOY_FA.md
+ D FULLQUALITY_REALTIME_V8_FA.md
+ D LOW_LATENCY_REMOTE_DEPLOY_FA.md
+ D OBSERVABLE_REALTIME_V9_FA.md
+ D PACKAGE_SOURCE_INFO.txt
+ D README-FIRST-FA.txt
+ D README.md
+ D REMOTE_CUDA_CLEAN_BUILD_FIX_FA.md
+ D VALIDATION_FA.md
+ M core/config/pulsar.env
+?? loge.sh
+?? pulsar-steady-diagnosis-20260806-190521.log
+?? step-2-camera-throughput-20260806-192228.log
