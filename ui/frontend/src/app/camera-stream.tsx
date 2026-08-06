@@ -42,8 +42,8 @@ function cameraServiceBaseUrl() {
   return "http://127.0.0.1:4173";
 }
 
-function cameraServiceStreamUrl(cameraIndex: 0 | 1, retryToken: number) {
-  return `${cameraServiceBaseUrl()}/camera/${cameraIndex}/stream?v=${retryToken}`;
+function cameraLatestFrameUrl(cameraIndex: 0 | 1, previousFrameId: number) {
+  return `${cameraServiceBaseUrl()}/camera/${cameraIndex}/frame.jpg?after=${previousFrameId}&t=${performance.now().toFixed(0)}`;
 }
 
 export function stereoAutoAlignTriggerParam(trigger: StereoAutoAlignTrigger) {
@@ -62,6 +62,9 @@ export async function requestStereoAutoAlign(query = "") {
 }
 
 type CameraStreamStatus = "connecting" | "live" | "offline";
+type WorkerFrameMessage =
+  | { type: "bitmap"; bitmap: ImageBitmap; sequence: number }
+  | { type: "error" };
 
 function CameraLiveView({
   cameraIndex,
@@ -74,66 +77,95 @@ function CameraLiveView({
 }) {
   const [streamStatus, setStreamStatus] = useState<CameraStreamStatus>("connecting");
   const [hasLiveFrame, setHasLiveFrame] = useState(false);
-  const [retryToken, setRetryToken] = useState(0);
-  const reconnectTimerRef = useRef<number | null>(null);
-  const offlineTimerRef = useRef<number | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const isCalibratedFeed = Boolean(alignOffset?.enabled && alignOffset.samples > 0);
   const alignStyle = cameraAlignStyle(cameraIndex, alignOffset);
 
   useEffect(() => {
-    return () => {
-      if (reconnectTimerRef.current !== null) {
-        window.clearTimeout(reconnectTimerRef.current);
+    let stopped = false;
+    let consecutiveFailures = 0;
+    let previousFrameId = 0;
+    let controller: AbortController | null = null;
+    const worker = new Worker(new URL("./cameraFrameWorker.ts", import.meta.url), { type: "module" });
+
+    worker.onmessage = (event: MessageEvent<WorkerFrameMessage>) => {
+      if (stopped) return;
+      if (event.data.type === "error") {
+        setStreamStatus("offline");
+        return;
       }
-      if (offlineTimerRef.current !== null) {
-        window.clearTimeout(offlineTimerRef.current);
+      const bitmap = event.data.bitmap;
+      const canvas = canvasRef.current;
+      const context = canvas?.getContext("2d", { alpha: false, desynchronized: true });
+      if (canvas && context) {
+        const targetWidth = Math.max(1, Math.round(canvas.clientWidth || bitmap.width));
+        const targetHeight = Math.max(1, Math.round(canvas.clientHeight || bitmap.height));
+        if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+          canvas.width = targetWidth;
+          canvas.height = targetHeight;
+        }
+        const scale = Math.max(targetWidth / bitmap.width, targetHeight / bitmap.height);
+        const sourceWidth = targetWidth / scale;
+        const sourceHeight = targetHeight / scale;
+        const sourceX = (bitmap.width - sourceWidth) * 0.5;
+        const sourceY = (bitmap.height - sourceHeight) * 0.5;
+        context.drawImage(bitmap, sourceX, sourceY, sourceWidth, sourceHeight,
+                          0, 0, targetWidth, targetHeight);
+        setHasLiveFrame(true);
+        setStreamStatus("live");
+      }
+      bitmap.close();
+    };
+
+    worker.onerror = () => {
+      if (!stopped) setStreamStatus("offline");
+    };
+
+    const sleep = (milliseconds: number) =>
+      new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
+
+    const receiveLatestFrames = async () => {
+      while (!stopped) {
+        controller = new AbortController();
+        try {
+          const response = await fetch(cameraLatestFrameUrl(cameraIndex, previousFrameId), {
+            cache: "no-store",
+            signal: controller.signal,
+            headers: { Accept: "image/jpeg" }
+          });
+          if (!response.ok) throw new Error(`camera preview HTTP ${response.status}`);
+          const frameId = Number(response.headers.get("X-Pulsar-Frame-Id") ?? "0");
+          const buffer = await response.arrayBuffer();
+          if (stopped) break;
+          if (buffer.byteLength > 0 && frameId !== previousFrameId) {
+            previousFrameId = frameId;
+            worker.postMessage({ type: "frame", buffer }, [buffer]);
+          }
+          consecutiveFailures = 0;
+        } catch (error) {
+          if (stopped || (error instanceof DOMException && error.name === "AbortError")) break;
+          consecutiveFailures += 1;
+          setStreamStatus(consecutiveFailures >= 3 ? "offline" : "connecting");
+          await sleep(Math.min(800, 120 * consecutiveFailures));
+        }
       }
     };
-  }, []);
 
-  const scheduleReconnect = () => {
-    if (reconnectTimerRef.current !== null) {
-      window.clearTimeout(reconnectTimerRef.current);
-    }
-    if (offlineTimerRef.current !== null) {
-      window.clearTimeout(offlineTimerRef.current);
-    }
-    if (hasLiveFrame) {
-      setStreamStatus("connecting");
-      offlineTimerRef.current = window.setTimeout(() => {
-        setStreamStatus("offline");
-        offlineTimerRef.current = null;
-      }, 1600);
-    } else {
-      setStreamStatus("offline");
-    }
-    reconnectTimerRef.current = window.setTimeout(() => {
-      setStreamStatus("connecting");
-      setRetryToken((current) => current + 1);
-      reconnectTimerRef.current = null;
-    }, 900);
-  };
+    void receiveLatestFrames();
+    return () => {
+      stopped = true;
+      controller?.abort();
+      worker.terminate();
+    };
+  }, [cameraIndex]);
 
   return (
     <div className={`medical-texture is-live-stream camera-stream-${streamStatus} ${isCalibratedFeed ? "is-calibrated-feed" : ""}`}>
-      <img
-        key={`${cameraIndex}-${retryToken}`}
+      <canvas
+        ref={canvasRef}
         className="camera-live-image is-visible"
-        src={cameraServiceStreamUrl(cameraIndex, retryToken)}
-        alt={`${label} live camera stream`}
+        aria-label={`${label} latest-only live camera preview`}
         style={alignStyle}
-        draggable={false}
-        decoding="async"
-        fetchPriority="high"
-        onLoad={() => {
-          if (offlineTimerRef.current !== null) {
-            window.clearTimeout(offlineTimerRef.current);
-            offlineTimerRef.current = null;
-          }
-          setHasLiveFrame(true);
-          setStreamStatus("live");
-        }}
-        onError={scheduleReconnect}
       />
       {streamStatus === "offline" || (!hasLiveFrame && streamStatus !== "live") ? (
         <div className="camera-disconnect-panel" role="status" aria-live="polite">

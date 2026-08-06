@@ -18,6 +18,10 @@ class CameraManager {
   void stop();
   CameraStatus snapshot(size_t index) const;
   bool waitForFrame(size_t index, uint64_t previousId, CameraStatus& out, int timeoutMs) const;
+  bool waitForPreviewJpeg(size_t index, uint64_t previousFrameId,
+                          std::shared_ptr<const std::vector<uint8_t>>& jpeg,
+                          uint64_t& frameId, uint64_t& sourceTimestampNs,
+                          int timeoutMs) const;
   void acquirePreviewStream(size_t index) const;
   void releasePreviewStream(size_t index) const;
   bool usingMock() const { return mockMode_; }

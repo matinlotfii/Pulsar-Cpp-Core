@@ -368,7 +368,9 @@ browser_flags=(
   --autoplay-policy=no-user-gesture-required
   --overscroll-history-navigation=0 --disable-pinch
   --disable-background-networking --disable-component-update --disable-sync
-  --disable-features=AutofillServerCommunication,MediaRouter,OptimizationHints,PushMessagingBackgroundMode,TranslateUI
+  --disable-smooth-scrolling --disable-renderer-backgrounding
+  --disable-background-timer-throttling --disable-backgrounding-occluded-windows
+  --disable-features=AutofillServerCommunication,MediaRouter,OptimizationHints,PushMessagingBackgroundMode,TranslateUI,CalculateNativeWinOcclusion
   --metrics-recording-only --password-store=basic --use-mock-keychain
   --enable-features=UseOzonePlatform --ozone-platform=x11 --use-gl=angle --use-angle=gl
   --touch-events=enabled

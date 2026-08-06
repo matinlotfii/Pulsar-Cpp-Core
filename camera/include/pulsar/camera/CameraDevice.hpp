@@ -93,7 +93,15 @@ class CameraDevice {
       CameraStatus& out,
       int timeoutMs) const;
 
+  bool waitForPreviewJpeg(
+      uint64_t previousFrameId,
+      std::shared_ptr<const std::vector<uint8_t>>& jpeg,
+      uint64_t& frameId,
+      uint64_t& sourceTimestampNs,
+      int timeoutMs) const;
+
   void notifyPreviewDemand();
+  void clearPreviewCache();
 
  private:
   void loop();
@@ -147,6 +155,9 @@ class CameraDevice {
   int targetFps_;
   int previewFps_;
   int jpegQuality_;
+  uint32_t previewMaxWidth_ = 640;
+  uint32_t previewMaxHeight_ = 360;
+  int previewLogIntervalSec_ = 5;
 
   std::filesystem::path profilePath_;
   bool profileEnabled_;
@@ -185,10 +196,12 @@ class CameraDevice {
   bool controlsApplied_ = false;
 
   std::shared_ptr<const std::vector<uint8_t>> lastJpeg_;
+  uint64_t lastJpegFrameId_ = 0;
+  uint64_t lastJpegSourceTimestampNs_ = 0;
 
   std::thread previewWorker_;
   mutable std::mutex previewMutex_;
-  std::condition_variable previewCv_;
+  mutable std::condition_variable previewCv_;
   std::shared_ptr<const Frame> previewPending_;
 
   std::atomic<bool> running_{false};

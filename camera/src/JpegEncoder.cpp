@@ -8,6 +8,40 @@
 
 namespace pulsar::camera {
 
+
+void resizeRgbNearestInto(const uint8_t* rgb, uint32_t width, uint32_t height,
+                          uint32_t targetWidth, uint32_t targetHeight,
+                          std::vector<uint8_t>& out) {
+  if (rgb == nullptr || width == 0 || height == 0 || targetWidth == 0 || targetHeight == 0) {
+    out.clear();
+    return;
+  }
+  const size_t bytes = static_cast<size_t>(targetWidth) * targetHeight * 3u;
+  out.resize(bytes);
+  if (targetWidth == width && targetHeight == height) {
+    std::copy(rgb, rgb + bytes, out.begin());
+    return;
+  }
+
+  // Preview-only scaler: one source lookup and one RGB copy per output pixel.
+  // The medical display path never uses this function.
+  for (uint32_t y = 0; y < targetHeight; ++y) {
+    const uint32_t sourceY = std::min(height - 1u,
+        static_cast<uint32_t>((static_cast<uint64_t>(y) * height) / targetHeight));
+    const uint8_t* sourceRow = rgb + static_cast<size_t>(sourceY) * width * 3u;
+    uint8_t* targetRow = out.data() + static_cast<size_t>(y) * targetWidth * 3u;
+    for (uint32_t x = 0; x < targetWidth; ++x) {
+      const uint32_t sourceX = std::min(width - 1u,
+          static_cast<uint32_t>((static_cast<uint64_t>(x) * width) / targetWidth));
+      const uint8_t* source = sourceRow + static_cast<size_t>(sourceX) * 3u;
+      uint8_t* target = targetRow + static_cast<size_t>(x) * 3u;
+      target[0] = source[0];
+      target[1] = source[1];
+      target[2] = source[2];
+    }
+  }
+}
+
 void resizeRgbBilinearInto(const uint8_t* rgb, uint32_t width, uint32_t height,
                            uint32_t targetWidth, uint32_t targetHeight,
                            std::vector<uint8_t>& out) {

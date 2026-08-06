@@ -377,6 +377,12 @@ CameraDevice::CameraDevice(uint32_t slot, uint32_t sdkIndex, std::string serialS
       startGate_(std::move(startGate)) {
   status_.slot = slot_;
   status_.label = label_;
+  previewMaxWidth_ = static_cast<uint32_t>(
+      envInt("PULSAR_PREVIEW_MAX_WIDTH", 640, 160, 1280));
+  previewMaxHeight_ = static_cast<uint32_t>(
+      envInt("PULSAR_PREVIEW_MAX_HEIGHT", 360, 90, 720));
+  previewLogIntervalSec_ = envInt(
+      "PULSAR_PREVIEW_LOG_INTERVAL_SEC", 5, 2, 60);
   gpuRequested_ = gpuRequestedForSlot(slot_);
   if (gpuRequested_) {
     gpuPipeline_ = std::make_unique<GpuBayerPipeline>();
@@ -415,8 +421,32 @@ bool CameraDevice::waitForFrame(uint64_t previousId, CameraStatus& out, int time
   return out.frame && out.frame->id != previousId;
 }
 
+bool CameraDevice::waitForPreviewJpeg(
+    uint64_t previousFrameId,
+    std::shared_ptr<const std::vector<uint8_t>>& jpeg,
+    uint64_t& frameId,
+    uint64_t& sourceTimestampNs,
+    int timeoutMs) const {
+  std::unique_lock<std::mutex> lock(previewMutex_);
+  previewCv_.wait_for(lock, std::chrono::milliseconds(timeoutMs), [&] {
+    return !running_ || (lastJpeg_ && !lastJpeg_->empty() &&
+                         lastJpegFrameId_ != previousFrameId);
+  });
+  jpeg = lastJpeg_;
+  frameId = lastJpegFrameId_;
+  sourceTimestampNs = lastJpegSourceTimestampNs_;
+  return jpeg && !jpeg->empty() && frameId != previousFrameId;
+}
+
 void CameraDevice::notifyPreviewDemand() {
   previewCv_.notify_all();
+}
+
+void CameraDevice::clearPreviewCache() {
+  std::lock_guard<std::mutex> lock(previewMutex_);
+  lastJpeg_.reset();
+  lastJpegFrameId_ = 0;
+  lastJpegSourceTimestampNs_ = 0;
 }
 
 void CameraDevice::loop() {
@@ -750,55 +780,119 @@ void CameraDevice::mockLoop() {
 
 void CameraDevice::previewLoop() {
   pthread_setname_np(pthread_self(), slot_ == 0 ? "pulsar-jpg-l" : "pulsar-jpg-r");
-  bestEffortRealtime(-4, 10);
+
+  // JPEG preview must never compete with acquisition or the SBS renderer.
+  // Linux nice values are per-thread; no realtime scheduling is requested here.
+  ::setpriority(PRIO_PROCESS, 0, 12);
 
   const auto interval = std::chrono::milliseconds(1000 / std::max(previewFps_, 1));
   auto next = std::chrono::steady_clock::now();
+  auto reportStart = next;
   uint64_t encodedId = 0;
+  uint64_t reportFrames = 0;
+  uint64_t reportBytes = 0;
+  double resizeMsSum = 0.0;
+  double encodeMsSum = 0.0;
+  double totalMsSum = 0.0;
+  double totalMsMax = 0.0;
 
   while (running_) {
     {
       std::unique_lock<std::mutex> lock(previewMutex_);
       previewCv_.wait(lock, [&] {
-        return !running_ || ((previewDemand_ == nullptr || previewDemand_()) && previewPending_ && previewPending_->id != encodedId);
+        return !running_ || ((previewDemand_ == nullptr || previewDemand_()) &&
+                             previewPending_ && previewPending_->id != encodedId);
       });
     }
     if (!running_) break;
     if (previewDemand_ != nullptr && !previewDemand_()) {
       std::lock_guard<std::mutex> lock(previewMutex_);
       lastJpeg_.reset();
+      lastJpegFrameId_ = 0;
+      lastJpegSourceTimestampNs_ = 0;
       continue;
     }
 
-    std::this_thread::sleep_until(next);
+    const auto now = std::chrono::steady_clock::now();
+    if (next > now) std::this_thread::sleep_until(next);
     if (!running_) break;
 
     std::shared_ptr<const Frame> frame;
     {
       std::lock_guard<std::mutex> lock(previewMutex_);
-      frame = previewPending_;
+      frame = previewPending_;  // latest-only single slot; no preview queue
     }
-    if (!frame || !frame->rgb || frame->rgb->empty()) continue;
+    if (!frame || !frame->rgb || frame->rgb->empty() || frame->id == encodedId) continue;
 
+    const auto totalStart = std::chrono::steady_clock::now();
     uint32_t jpegWidth = frame->width;
     uint32_t jpegHeight = frame->height;
     const uint8_t* jpegData = frame->rgb->data();
-    const double jpegScale = std::min({1.0, 960.0 / std::max<uint32_t>(1, frame->width),
-                                       540.0 / std::max<uint32_t>(1, frame->height)});
+    const double jpegScale = std::min({
+        1.0,
+        static_cast<double>(previewMaxWidth_) / std::max<uint32_t>(1, frame->width),
+        static_cast<double>(previewMaxHeight_) / std::max<uint32_t>(1, frame->height)});
+
+    const auto resizeStart = std::chrono::steady_clock::now();
     if (jpegScale < 0.999) {
       jpegWidth = std::max<uint32_t>(1, static_cast<uint32_t>(std::lround(frame->width * jpegScale)));
       jpegHeight = std::max<uint32_t>(1, static_cast<uint32_t>(std::lround(frame->height * jpegScale)));
-      resizeRgbBilinearInto(frame->rgb->data(), frame->width, frame->height, jpegWidth, jpegHeight, previewResized_);
+      resizeRgbNearestInto(frame->rgb->data(), frame->width, frame->height,
+                           jpegWidth, jpegHeight, previewResized_);
       jpegData = previewResized_.data();
     }
+    const auto resizeEnd = std::chrono::steady_clock::now();
 
-    auto jpeg = std::make_shared<std::vector<uint8_t>>(encodeJpeg(jpegData, jpegWidth, jpegHeight, jpegQuality_));
+    auto jpeg = std::make_shared<std::vector<uint8_t>>(
+        encodeJpeg(jpegData, jpegWidth, jpegHeight, jpegQuality_));
+    const auto encodeEnd = std::chrono::steady_clock::now();
+    if (jpeg->empty()) continue;
+
     {
       std::lock_guard<std::mutex> lock(previewMutex_);
-      lastJpeg_ = std::move(jpeg);
+      lastJpeg_ = jpeg;
+      lastJpegFrameId_ = frame->id;
+      lastJpegSourceTimestampNs_ = frame->timestampNs;
     }
+    previewCv_.notify_all();
     encodedId = frame->id;
     next = std::chrono::steady_clock::now() + interval;
+
+    const auto ms = [](auto duration) {
+      return std::chrono::duration<double, std::milli>(duration).count();
+    };
+    const double resizeMs = ms(resizeEnd - resizeStart);
+    const double encodeMs = ms(encodeEnd - resizeEnd);
+    const double totalMs = ms(encodeEnd - totalStart);
+    resizeMsSum += resizeMs;
+    encodeMsSum += encodeMs;
+    totalMsSum += totalMs;
+    totalMsMax = std::max(totalMsMax, totalMs);
+    reportBytes += jpeg->size();
+    ++reportFrames;
+
+    const auto reportNow = std::chrono::steady_clock::now();
+    const std::chrono::duration<double> reportElapsed = reportNow - reportStart;
+    if (reportElapsed.count() >= static_cast<double>(previewLogIntervalSec_)) {
+      const double divisor = static_cast<double>(std::max<uint64_t>(1, reportFrames));
+      std::cerr << label_ << ": preview-stats"
+                << " fps=" << (static_cast<double>(reportFrames) / reportElapsed.count())
+                << " size=" << jpegWidth << "x" << jpegHeight
+                << " quality=" << jpegQuality_
+                << " resize-ms=" << (resizeMsSum / divisor)
+                << " jpeg-ms=" << (encodeMsSum / divisor)
+                << " total-ms=" << (totalMsSum / divisor)
+                << " total-max-ms=" << totalMsMax
+                << " avg-bytes=" << (static_cast<double>(reportBytes) / divisor)
+                << '\n';
+      reportFrames = 0;
+      reportBytes = 0;
+      resizeMsSum = 0.0;
+      encodeMsSum = 0.0;
+      totalMsSum = 0.0;
+      totalMsMax = 0.0;
+      reportStart = reportNow;
+    }
   }
 }
 
@@ -1033,15 +1127,15 @@ bool CameraDevice::configure() {
       ? static_cast<GX_PORT_HANDLE>(streamHandle)
       : static_cast<GX_PORT_HANDLE>(device_);
 
-  // ROI 1920x1080 at 89 fps is about 184.6 MB/s of BayerRG8 payload per
-  // camera. A bounded per-camera throughput request avoids asking two cameras
-  // on the same xHCI controller for more aggregate bandwidth than required.
+  // Full-sensor 4024x3036 BayerRG8 at the camera's proven ~32.3 fps operating
+  // point. The throughput limit is shared-controller aware and does not alter
+  // image quality. Smaller transfer/URB queues reduce stale-frame residence.
   const int linkThroughputBps = envInt(
-      "PULSAR_CAMERA_LINK_THROUGHPUT_BPS", 220000000, 100000000, 500000000);
+      "PULSAR_CAMERA_LINK_THROUGHPUT_BPS", 350000000, 100000000, 500000000);
   const int streamTransferSize = envInt(
-      "PULSAR_STREAM_TRANSFER_SIZE", 1024 * 1024, 64 * 1024, 4 * 1024 * 1024);
+      "PULSAR_STREAM_TRANSFER_SIZE", 256 * 1024, 64 * 1024, 4 * 1024 * 1024);
   const int streamTransferUrb = envInt(
-      "PULSAR_STREAM_TRANSFER_URB", 96, 8, 512);
+      "PULSAR_STREAM_TRANSFER_URB", 64, 8, 512);
 
   if (!setEnumOneOf(device_, "DeviceLinkThroughputLimitMode", {"On"})) {
     setBool(device_, "DeviceLinkThroughputLimitMode", true);
@@ -1264,7 +1358,21 @@ void CameraDevice::publish(
     resizeRgbBilinearInto(rgb, width, height, outWidth, outHeight, resized_);
     data = resized_.data();
   }
-  auto rgbCopy = std::make_shared<std::vector<uint8_t>>(data, data + static_cast<size_t>(outWidth) * outHeight * 3u);
+  const std::size_t outputBytes = static_cast<std::size_t>(outWidth) * outHeight * 3u;
+  std::shared_ptr<std::vector<uint8_t>> rgbCopy;
+  for (std::size_t attempt = 0; attempt < rgbFramePool_.size(); ++attempt) {
+    const std::size_t index = (rgbFramePoolCursor_ + attempt) % rgbFramePool_.size();
+    auto& candidate = rgbFramePool_[index];
+    if (!candidate) candidate = std::make_shared<std::vector<uint8_t>>();
+    if (candidate.use_count() == 1) {
+      rgbCopy = candidate;
+      rgbFramePoolCursor_ = (index + 1u) % rgbFramePool_.size();
+      break;
+    }
+  }
+  if (!rgbCopy) rgbCopy = std::make_shared<std::vector<uint8_t>>();
+  rgbCopy->resize(outputBytes);
+  std::memcpy(rgbCopy->data(), data, outputBytes);
   std::shared_ptr<const std::vector<uint8_t>> currentJpeg;
   {
     std::lock_guard<std::mutex> lock(previewMutex_);

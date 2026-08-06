@@ -80,6 +80,51 @@ struct StereoAlignmentEstimate {
 
 StereoAutoAlignRuntime stereoAutoAlignRuntime;
 
+struct SnapshotTelemetry {
+  std::atomic<uint64_t> requests{0};
+  std::atomic<uint64_t> bytes{0};
+  std::atomic<uint64_t> totalRequestNs{0};
+  std::atomic<uint64_t> totalSourceAgeNs{0};
+  std::atomic<uint64_t> lastReportNs{0};
+};
+
+std::array<SnapshotTelemetry, 2> snapshotTelemetry;
+
+uint64_t steadyNowNs() {
+  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+void recordSnapshotTelemetry(size_t cameraIndex, uint64_t requestStartNs,
+                             uint64_t sourceTimestampNs, size_t bytes) {
+  if (cameraIndex >= snapshotTelemetry.size()) return;
+  auto& telemetry = snapshotTelemetry[cameraIndex];
+  const uint64_t now = steadyNowNs();
+  telemetry.requests.fetch_add(1, std::memory_order_relaxed);
+  telemetry.bytes.fetch_add(bytes, std::memory_order_relaxed);
+  telemetry.totalRequestNs.fetch_add(now - requestStartNs, std::memory_order_relaxed);
+  if (sourceTimestampNs > 0 && now >= sourceTimestampNs) {
+    telemetry.totalSourceAgeNs.fetch_add(now - sourceTimestampNs, std::memory_order_relaxed);
+  }
+
+  uint64_t last = telemetry.lastReportNs.load(std::memory_order_relaxed);
+  if (last != 0 && now - last < 5'000'000'000ULL) return;
+  if (!telemetry.lastReportNs.compare_exchange_strong(last, now, std::memory_order_relaxed)) return;
+
+  const uint64_t count = telemetry.requests.exchange(0, std::memory_order_relaxed);
+  const uint64_t byteCount = telemetry.bytes.exchange(0, std::memory_order_relaxed);
+  const uint64_t requestNs = telemetry.totalRequestNs.exchange(0, std::memory_order_relaxed);
+  const uint64_t ageNs = telemetry.totalSourceAgeNs.exchange(0, std::memory_order_relaxed);
+  if (count == 0) return;
+  const double divisor = static_cast<double>(count);
+  std::cerr << "UI Snapshot: latest-stats camera=" << cameraIndex
+            << " requests=" << count
+            << " request-ms=" << (static_cast<double>(requestNs) / divisor / 1.0e6)
+            << " source-age-ms=" << (static_cast<double>(ageNs) / divisor / 1.0e6)
+            << " avg-bytes=" << (static_cast<double>(byteCount) / divisor)
+            << '\n';
+}
+
 bool sendAll(int fd, const void* data, size_t size) {
   const auto* bytes = static_cast<const uint8_t*>(data);
   while (size > 0) {
@@ -1704,16 +1749,46 @@ void HttpServer::handleClient(int fd) {
 
   const int frameIndex = cameraIndexFromPath(request->path, "/frame.jpg");
   if (request->method == "GET" && frameIndex >= 0) {
-    const auto camera = cameras_.snapshot(static_cast<size_t>(frameIndex));
-    std::vector<uint8_t> offline;
-    const std::vector<uint8_t>* jpeg = nullptr;
-    if (camera.frame && camera.frame->jpeg && !camera.frame->jpeg->empty()) jpeg = camera.frame->jpeg.get();
-    else {
-      const auto rgb = camera::makeOfflineRgb(960, 540, static_cast<uint8_t>(frameIndex * 31));
-      offline = camera::encodeJpeg(rgb.data(), 960, 540, 80);
-      jpeg = &offline;
+    uint64_t previousFrameId = 0;
+    if (const auto value = queryValue(request->query, "after"); value && !value->empty()) {
+      try {
+        previousFrameId = std::stoull(*value);
+      } catch (...) {
+        previousFrameId = 0;
+      }
     }
-    response(fd, "200 OK", "image/jpeg", jpeg->data(), jpeg->size());
+
+    const size_t index = static_cast<size_t>(frameIndex);
+    const uint64_t requestStartNs = steadyNowNs();
+    cameras_.acquirePreviewStream(index);
+    std::shared_ptr<const std::vector<uint8_t>> jpeg;
+    uint64_t frameId = 0;
+    uint64_t sourceTimestampNs = 0;
+    cameras_.waitForPreviewJpeg(index, previousFrameId, jpeg, frameId,
+                                sourceTimestampNs, 700);
+    cameras_.releasePreviewStream(index);
+
+    std::vector<uint8_t> offline;
+    if (!jpeg || jpeg->empty()) {
+      const auto rgb = camera::makeOfflineRgb(640, 360,
+          static_cast<uint8_t>((previousFrameId + static_cast<uint64_t>(frameIndex * 31)) & 0xffu));
+      offline = camera::encodeJpeg(rgb.data(), 640, 360, 45);
+      jpeg = std::make_shared<const std::vector<uint8_t>>(std::move(offline));
+      frameId = previousFrameId;
+      sourceTimestampNs = 0;
+    }
+
+    const uint64_t responseHeaderNs = steadyNowNs();
+    const double sourceAgeMs = sourceTimestampNs > 0 && responseHeaderNs >= sourceTimestampNs
+        ? static_cast<double>(responseHeaderNs - sourceTimestampNs) / 1.0e6
+        : 0.0;
+    std::ostringstream extra;
+    extra << "X-Pulsar-Frame-Id: " << frameId << "\r\n"
+          << "X-Pulsar-Source-Timestamp-Ns: " << sourceTimestampNs << "\r\n"
+          << "X-Pulsar-Source-Age-Ms: " << sourceAgeMs << "\r\n"
+          << "X-Pulsar-Preview-Mode: latest-only-long-poll\r\n";
+    response(fd, "200 OK", "image/jpeg", jpeg->data(), jpeg->size(), extra.str());
+    recordSnapshotTelemetry(index, requestStartNs, sourceTimestampNs, jpeg->size());
     return;
   }
   const int streamIndex = cameraIndexFromPath(request->path, "/stream.mjpg");
@@ -1884,14 +1959,22 @@ void HttpServer::handleStream(int fd, size_t cameraIndex) {
   };
   const std::string header =
       "HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=pulsarframe\r\n"
-      "Cache-Control: no-store\r\nConnection: close\r\n\r\n";
+      "Cache-Control: no-store, no-cache, must-revalidate, max-age=0\r\n"
+      "Pragma: no-cache\r\nConnection: close\r\n\r\n";
   if (!sendAll(fd, header)) {
     releasePreview();
     return;
   }
+
   uint64_t previousFrame = 0;
   const std::vector<uint8_t>* previousJpeg = nullptr;
   std::vector<uint8_t> offline;
+  uint64_t sentFrames = 0;
+  uint64_t sentBytes = 0;
+  double sendMsSum = 0.0;
+  double sendMsMax = 0.0;
+  auto reportStart = std::chrono::steady_clock::now();
+
   while (runningSignal_ != nullptr && runningSignal_->load()) {
     camera::CameraStatus status;
     cameras_.waitForFrame(cameraIndex, previousFrame, status, 1000);
@@ -1899,19 +1982,46 @@ void HttpServer::handleStream(int fd, size_t cameraIndex) {
     if (status.frame && status.frame->jpeg && !status.frame->jpeg->empty()) {
       previousFrame = status.frame->id;
       jpeg = status.frame->jpeg.get();
-      if (jpeg == previousJpeg) continue;
+      if (jpeg == previousJpeg) continue;  // latest encoded preview only
       previousJpeg = jpeg;
     } else {
-      const auto rgb = camera::makeOfflineRgb(960, 540, static_cast<uint8_t>((previousFrame++) & 0xffu));
-      offline = camera::encodeJpeg(rgb.data(), 960, 540, 75);
+      const auto rgb = camera::makeOfflineRgb(640, 360, static_cast<uint8_t>((previousFrame++) & 0xffu));
+      offline = camera::encodeJpeg(rgb.data(), 640, 360, 55);
       jpeg = &offline;
       previousJpeg = nullptr;
     }
+
     std::ostringstream part;
-    part << "--pulsarframe\r\nContent-Type: image/jpeg\r\nContent-Length: " << jpeg->size() << "\r\n\r\n";
-    if (!sendAll(fd, part.str()) || !sendAll(fd, jpeg->data(), jpeg->size()) || !sendAll(fd, "\r\n")) {
+    part << "--pulsarframe\r\nContent-Type: image/jpeg\r\nContent-Length: "
+         << jpeg->size() << "\r\n\r\n";
+    const auto sendStart = std::chrono::steady_clock::now();
+    const bool sent = sendAll(fd, part.str()) && sendAll(fd, jpeg->data(), jpeg->size()) &&
+                      sendAll(fd, "\r\n");
+    const auto sendEnd = std::chrono::steady_clock::now();
+    const double sendMs = std::chrono::duration<double, std::milli>(sendEnd - sendStart).count();
+    if (!sent) {
       releasePreview();
       return;
+    }
+
+    ++sentFrames;
+    sentBytes += jpeg->size();
+    sendMsSum += sendMs;
+    sendMsMax = std::max(sendMsMax, sendMs);
+    const std::chrono::duration<double> elapsed = sendEnd - reportStart;
+    if (elapsed.count() >= 5.0) {
+      const double divisor = static_cast<double>(std::max<uint64_t>(1, sentFrames));
+      std::cerr << "UI Stream: mjpeg-stats camera=" << cameraIndex
+                << " fps=" << (static_cast<double>(sentFrames) / elapsed.count())
+                << " send-ms=" << (sendMsSum / divisor)
+                << " send-max-ms=" << sendMsMax
+                << " avg-bytes=" << (static_cast<double>(sentBytes) / divisor)
+                << '\n';
+      sentFrames = 0;
+      sentBytes = 0;
+      sendMsSum = 0.0;
+      sendMsMax = 0.0;
+      reportStart = sendEnd;
     }
   }
   releasePreview();

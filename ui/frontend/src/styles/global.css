@@ -9064,3 +9064,40 @@ html.pulsar-remote-ui textarea {
   cursor: text !important;
 }
 
+
+
+/* PULSAR_REALTIME_UI_V8
+ * The native SDL/CUDA display remains the medical-quality path. The browser is
+ * only a control surface and low-resolution preview, so remove decorative GPU
+ * work that can compete with camera acquisition or make touch feel sluggish. */
+html.pulsar-realtime-ui *,
+html.pulsar-realtime-ui *::before,
+html.pulsar-realtime-ui *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}
+
+html.pulsar-realtime-ui .camera-live-image,
+html.pulsar-realtime-ui .camera-mjpeg-fallback {
+  filter: none !important;
+  transition: none !important;
+  will-change: auto !important;
+  image-rendering: auto;
+}
+
+html.pulsar-realtime-ui .medical-texture.is-live-stream,
+html.pulsar-realtime-ui .camera-layout,
+html.pulsar-realtime-ui .stereo-layout {
+  contain: layout paint style;
+}
+
+html.pulsar-realtime-ui [style*="backdrop-filter"],
+html.pulsar-realtime-ui .glass-card,
+html.pulsar-realtime-ui .liquid-glass,
+html.pulsar-realtime-ui .modal-panel,
+html.pulsar-realtime-ui .wifi-keyboard {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}

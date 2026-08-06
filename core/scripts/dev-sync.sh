@@ -53,15 +53,11 @@ run_remote_apply() {
   printf -v script 'set -Eeuo pipefail; cd %q' "$SYNC_REMOTE_DIR"
   script+='; chmod +x ./run.sh ./core/scripts/*.sh'
   script+='; mkdir -p ./core/data ./core/config'
-  script+='; if [[ -f "$HOME/.pulsar-preserved-state/core/data/display-routing.env" ]]; then cp -a "$HOME/.pulsar-preserved-state/core/data/display-routing.env" ./core/data/display-routing.env; fi'
-  script+='; if [[ -f "$HOME/.pulsar-preserved-state/core/config/pulsar.local.env" ]]; then cp -a "$HOME/.pulsar-preserved-state/core/config/pulsar.local.env" ./core/config/pulsar.local.env; fi'
   script+='; export CUDA_HOME=/usr/local/cuda-13.2'
   script+='; export CUDACXX=/usr/local/cuda-13.2/bin/nvcc'
   script+='; export PATH="$CUDA_HOME/bin:$PATH"'
   script+='; test -x "$CUDACXX"'
-  # Keep machine-specific display/network settings, but remove stale camera
-  # overrides so this package's validated ROI 89-fps low-latency profile is
-  # actually used on the project computer.
+  # Source defaults are authoritative after the full-clean deployment.
   script+='; ./core/scripts/apply-camera-performance-profile.sh'
 
   if [[ "${SYNC_REMOTE_BUILD_ON_SYNC:-1}" == "1" ]]; then
@@ -84,9 +80,9 @@ run_remote_apply() {
     script+='; if [[ "$cameras_ok" != 1 ]]; then echo "ERROR: both cameras did not become online" >&2; printf "%s\n" "$cameras_json" >&2; journalctl -u pulsar-kiosk.service -n 200 --no-pager >&2 || true; exit 1; fi'
     script+='; echo "Pulsar health:"; curl -fsS http://127.0.0.1:4173/health; echo'
     script+='; echo "Pulsar cameras:"; printf "%s\n" "$cameras_json"'
-    script+='; echo "Pulsar pinned-staging low-latency path:"'
-    script+='; tail -n 700 ./core/data/pulsar.log 2>/dev/null | grep -aE "low-latency stream-buffer-mode=|GPU pipeline ready|stereo-pairing-mode=|software-start-sync=|latency-stats" | tail -n 50 || true'
-    script+='; ./core/scripts/verify-roi89-display.sh'
+    script+='; echo "Pulsar full-quality realtime path:"'
+    script+='; tail -n 700 ./core/data/pulsar.log 2>/dev/null | grep -aE "low-latency stream-buffer-mode=|GPU pipeline ready|stereo-pairing-mode=|software-start-sync=|latency-stats|preview-stats|UI Snapshot: latest-stats" | tail -n 50 || true'
+    script+='; ./core/scripts/verify-fullquality-realtime.sh'
   fi
 
   ssh "${SSH_OPTS[@]}" "$REMOTE" "bash -lc $(printf '%q' "$script")"

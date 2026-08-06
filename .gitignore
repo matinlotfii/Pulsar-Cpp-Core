@@ -25,3 +25,6 @@ pulsar-camera-render-touch-*.tar.gz
 /pulsar-*-diagnostics-*.tar.gz
 /pulsar-*-report-*.txt
 /pulsar-two-xreal-report-*.txt
+
+# Automatic low-overhead diagnostics copied back to the workstation
+/diagnostics/

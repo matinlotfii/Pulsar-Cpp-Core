@@ -91,6 +91,20 @@ bool CameraManager::waitForFrame(
       timeoutMs);
 }
 
+bool CameraManager::waitForPreviewJpeg(
+    size_t index,
+    uint64_t previousFrameId,
+    std::shared_ptr<const std::vector<uint8_t>>& jpeg,
+    uint64_t& frameId,
+    uint64_t& sourceTimestampNs,
+    int timeoutMs) const {
+  if (index >= devices_.size()) {
+    return false;
+  }
+  return devices_[index]->waitForPreviewJpeg(
+      previousFrameId, jpeg, frameId, sourceTimestampNs, timeoutMs);
+}
+
 void CameraManager::acquirePreviewStream(
     size_t index) const {
   if (index >= devices_.size()) {
@@ -110,18 +124,18 @@ void CameraManager::releasePreviewStream(
     return;
   }
 
-  int current =
-      previewStreams_[index].load(
-          std::memory_order_relaxed);
-
-  while (
-      current > 0 &&
-      !previewStreams_[index].compare_exchange_weak(
-          current,
-          current - 1,
-          std::memory_order_relaxed)) {
+  int current = previewStreams_[index].load(std::memory_order_relaxed);
+  bool becameIdle = false;
+  while (current > 0) {
+    const int desired = current - 1;
+    if (previewStreams_[index].compare_exchange_weak(
+            current, desired, std::memory_order_relaxed)) {
+      becameIdle = desired == 0;
+      break;
+    }
   }
 
+  if (becameIdle) devices_[index]->clearPreviewCache();
   devices_[index]->notifyPreviewDemand();
 }
 

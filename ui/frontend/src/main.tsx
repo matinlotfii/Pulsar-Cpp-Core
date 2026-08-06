@@ -4,6 +4,8 @@ import { App } from "./app/App";
 import "./styles/global.css";
 import "./styles/polish.css";
 
+document.documentElement.classList.add("pulsar-realtime-ui");
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <App />

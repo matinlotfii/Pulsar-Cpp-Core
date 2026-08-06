@@ -20,7 +20,7 @@ RUN_GIT_SSH_COMMAND="${RUN_GIT_SSH_COMMAND:-ssh -p 443 -o HostName=ssh.github.co
 RUN_GIT_BACKUP_DIR="${RUN_GIT_BACKUP_DIR:-$HOME/Downloads/Pulsar-Git-Backups}"
 RUN_GIT_TAG_PREFIX="${RUN_GIT_TAG_PREFIX:-pulsar-run}"
 RUN_GIT_MAX_FILE_MB="${RUN_GIT_MAX_FILE_MB:-95}"
-RUN_GIT_COMMIT_MESSAGE="${RUN_GIT_COMMIT_MESSAGE:-Pulsar ROI89 display-routing repair deployment}"
+RUN_GIT_COMMIT_MESSAGE="${RUN_GIT_COMMIT_MESSAGE:-Pulsar full-quality realtime UI-isolated deployment V8}"
 RUN_GIT_PROMPT="${RUN_GIT_PROMPT:-0}"
 RUN_REQUIRE_CUDA="${RUN_REQUIRE_CUDA:-1}"
 # Destructive clean-replace deployment: stop the old kiosk/UI, remove the old
@@ -76,9 +76,8 @@ ensure_sync_config() {
   upsert_env "$config" SYNC_REMOTE_BUILD_ON_SYNC 1
   upsert_env "$config" SYNC_REMOTE_RESTART_ON_SYNC 1
   upsert_env "$config" SYNC_REMOTE_REFRESH_SERVICE_ON_SYNC 0
-  # Preserve the known-good, machine-specific camera/display configuration on
-  # the project computer. The source defaults are still synced.
-  upsert_env "$config" SYNC_INCLUDE_LOCAL_CONFIG 0
+  # Full-clean mode: source defaults are authoritative on every run.
+  upsert_env "$config" SYNC_INCLUDE_LOCAL_CONFIG 1
 }
 
 load_sync_config() {
@@ -290,21 +289,11 @@ remote_git_name="$(basename "$remote_git_dir")"
 printf '\n[REMOTE] Stopping old system service: %s\n' "$service"
 sudo -n /usr/bin/systemctl stop "$service" 2>/dev/null || true
 
-# Preserve user-controlled display routing and machine-local settings after the
-# backend has stopped, so an atomic UI routing write cannot race this backup.
-# Derived display geometry is regenerated on startup.
-preserve_dir="$HOME/.pulsar-preserved-state"
-rm -rf -- "$preserve_dir"
-mkdir -p "$preserve_dir/core/data" "$preserve_dir/core/config"
-if [[ -f "$remote_dir/core/data/display-routing.env" ]]; then
-  cp -a "$remote_dir/core/data/display-routing.env" \
-    "$preserve_dir/core/data/display-routing.env"
-fi
-if [[ -f "$remote_dir/core/config/pulsar.local.env" ]]; then
-  cp -a "$remote_dir/core/config/pulsar.local.env" \
-    "$preserve_dir/core/config/pulsar.local.env"
-fi
-printf '[REMOTE] Preserved display routing and machine-local settings.\n'
+# Full-reset policy requested for this release: do not restore any previous
+# camera, browser, display-routing or machine-local Pulsar settings. The new
+# deployment starts from the package defaults and re-detects connected outputs.
+rm -rf -- "$HOME/.pulsar-preserved-state"
+printf '[REMOTE] Previous Pulsar settings will not be restored.\n'
 
 # Stop and remove an old continuous-sync user service so it cannot copy stale
 # files back into the freshly deployed directory.
@@ -370,6 +359,8 @@ rm -rf -- \
   "$HOME/.local/state/pulsar" \
   "$HOME/.local/share/pulsar" \
   "$HOME/.dev-sync" \
+  "$HOME/.pulsar-preserved-state" \
+  "$HOME/pulsar-diagnostics" \
   "/tmp/pulsar-runtime-$run_user" 2>/dev/null || true
 
 # Remove only temporary Pulsar entries owned by this user; do not touch other
@@ -384,6 +375,36 @@ test -d "$remote_dir" -a -w "$remote_dir"
 
 printf '[REMOTE] Clean destination ready: %s\n' "$remote_dir"
 REMOTE
+}
+
+collect_remote_diagnostics() {
+  load_sync_config
+  local remote="${SYNC_REMOTE_USER}@${SYNC_REMOTE_HOST}"
+  local local_dir="$ROOT/diagnostics"
+  mkdir -p "$local_dir"
+
+  echo
+  echo "========== LOW-OVERHEAD SYSTEM TRACE =========="
+  local output archive summary
+  output="$(ssh -F /dev/null -p "$SYNC_REMOTE_PORT" \
+    -o BatchMode=yes -o ConnectTimeout=20 \
+    -o StrictHostKeyChecking=accept-new \
+    "$remote" "cd $(printf '%q' "$SYNC_REMOTE_DIR") && source ./core/config/pulsar.env && ./core/scripts/collect-systemwide-trace.sh \"\${PULSAR_SYSTEM_TRACE_SECONDS:-30}\"")" || {
+      warn "Automatic diagnostic collection failed; deployment remains active."
+      return 0
+    }
+  printf '%s\n' "$output"
+  archive="$(printf '%s\n' "$output" | sed -n 's/^ARCHIVE=//p' | tail -n1)"
+  summary="$(printf '%s\n' "$output" | sed -n 's/^SUMMARY=//p' | tail -n1)"
+  if [[ -n "$archive" ]]; then
+    scp -F /dev/null -P "$SYNC_REMOTE_PORT" -q \
+      -o StrictHostKeyChecking=accept-new "$remote:$archive" "$local_dir/"
+  fi
+  if [[ -n "$summary" ]]; then
+    scp -F /dev/null -P "$SYNC_REMOTE_PORT" -q \
+      -o StrictHostKeyChecking=accept-new "$remote:$summary" "$local_dir/"
+  fi
+  log "Systemwide diagnostic files saved locally: $local_dir"
 }
 
 deploy_remote() {
@@ -416,6 +437,7 @@ case "$command" in
     checkpoint_and_push
     purge_remote_previous_deployment
     deploy_remote
+    collect_remote_diagnostics
     ;;
   setup-remote)
     setup_remote_sudo

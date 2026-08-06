@@ -80,7 +80,8 @@ const char* stereoPairingModeName(StereoPairingMode mode) {
 }
 
 struct GlPboSlot {
-  std::array<GlUInt, 2> buffers{};
+  std::array<GlUInt, 3> buffers{};
+  std::array<size_t, 3> capacities{};
   size_t next = 0;
 };
 
@@ -152,9 +153,13 @@ class GlPboUploader {
     }
 
     const size_t bytes = static_cast<size_t>(width) * static_cast<size_t>(height) * 3u;
-    const GlUInt buffer = slot.buffers[slot.next];
+    const size_t bufferIndex = slot.next;
+    const GlUInt buffer = slot.buffers[bufferIndex];
     glBindBuffer_(kGlPixelUnpackBuffer, buffer);
-    glBufferData_(kGlPixelUnpackBuffer, static_cast<GlSize>(bytes), nullptr, kGlStreamDraw);
+    if (slot.capacities[bufferIndex] != bytes) {
+      glBufferData_(kGlPixelUnpackBuffer, static_cast<GlSize>(bytes), nullptr, kGlStreamDraw);
+      slot.capacities[bufferIndex] = bytes;
+    }
 
     void* mapped = glMapBufferRange_(
         kGlPixelUnpackBuffer, 0, static_cast<GlSize>(bytes),
@@ -609,7 +614,7 @@ void SbsRenderer::loop() {
   if (pboRequested) {
     std::string pboError;
     if (pboUploader.initialize(renderer, pboError)) {
-      std::cerr << "SBS Renderer: OpenGL PBO upload ready (double-buffered canary)\n";
+      std::cerr << "SBS Renderer: OpenGL PBO upload ready (triple-buffered reusable capacity)\n";
     } else {
       std::cerr << "SBS Renderer: OpenGL PBO unavailable; SDL fallback active: "
                 << pboError << '\n';
