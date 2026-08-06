@@ -52,12 +52,15 @@ run_remote_apply() {
   local script
   printf -v script 'set -Eeuo pipefail; cd %q' "$SYNC_REMOTE_DIR"
   script+='; chmod +x ./run.sh ./core/scripts/*.sh'
+  script+='; mkdir -p ./core/data ./core/config'
+  script+='; if [[ -f "$HOME/.pulsar-preserved-state/core/data/display-routing.env" ]]; then cp -a "$HOME/.pulsar-preserved-state/core/data/display-routing.env" ./core/data/display-routing.env; fi'
+  script+='; if [[ -f "$HOME/.pulsar-preserved-state/core/config/pulsar.local.env" ]]; then cp -a "$HOME/.pulsar-preserved-state/core/config/pulsar.local.env" ./core/config/pulsar.local.env; fi'
   script+='; export CUDA_HOME=/usr/local/cuda-13.2'
   script+='; export CUDACXX=/usr/local/cuda-13.2/bin/nvcc'
   script+='; export PATH="$CUDA_HOME/bin:$PATH"'
   script+='; test -x "$CUDACXX"'
   # Keep machine-specific display/network settings, but remove stale camera
-  # overrides so this package's validated full-sensor low-latency profile is
+  # overrides so this package's validated ROI 89-fps low-latency profile is
   # actually used on the project computer.
   script+='; ./core/scripts/apply-camera-performance-profile.sh'
 
@@ -83,7 +86,7 @@ run_remote_apply() {
     script+='; echo "Pulsar cameras:"; printf "%s\n" "$cameras_json"'
     script+='; echo "Pulsar pinned-staging low-latency path:"'
     script+='; tail -n 700 ./core/data/pulsar.log 2>/dev/null | grep -aE "low-latency stream-buffer-mode=|GPU pipeline ready|stereo-pairing-mode=|software-start-sync=|latency-stats" | tail -n 50 || true'
-    script+='; ./core/scripts/verify-ultra-low-latency.sh'
+    script+='; ./core/scripts/verify-roi89-display.sh'
   fi
 
   ssh "${SSH_OPTS[@]}" "$REMOTE" "bash -lc $(printf '%q' "$script")"

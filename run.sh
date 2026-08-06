@@ -20,7 +20,7 @@ RUN_GIT_SSH_COMMAND="${RUN_GIT_SSH_COMMAND:-ssh -p 443 -o HostName=ssh.github.co
 RUN_GIT_BACKUP_DIR="${RUN_GIT_BACKUP_DIR:-$HOME/Downloads/Pulsar-Git-Backups}"
 RUN_GIT_TAG_PREFIX="${RUN_GIT_TAG_PREFIX:-pulsar-run}"
 RUN_GIT_MAX_FILE_MB="${RUN_GIT_MAX_FILE_MB:-95}"
-RUN_GIT_COMMIT_MESSAGE="${RUN_GIT_COMMIT_MESSAGE:-Pulsar tested pinned-staging ultra-low-latency deployment}"
+RUN_GIT_COMMIT_MESSAGE="${RUN_GIT_COMMIT_MESSAGE:-Pulsar ROI89 display-routing repair deployment}"
 RUN_GIT_PROMPT="${RUN_GIT_PROMPT:-0}"
 RUN_REQUIRE_CUDA="${RUN_REQUIRE_CUDA:-1}"
 # Destructive clean-replace deployment: stop the old kiosk/UI, remove the old
@@ -289,6 +289,22 @@ remote_git_name="$(basename "$remote_git_dir")"
 
 printf '\n[REMOTE] Stopping old system service: %s\n' "$service"
 sudo -n /usr/bin/systemctl stop "$service" 2>/dev/null || true
+
+# Preserve user-controlled display routing and machine-local settings after the
+# backend has stopped, so an atomic UI routing write cannot race this backup.
+# Derived display geometry is regenerated on startup.
+preserve_dir="$HOME/.pulsar-preserved-state"
+rm -rf -- "$preserve_dir"
+mkdir -p "$preserve_dir/core/data" "$preserve_dir/core/config"
+if [[ -f "$remote_dir/core/data/display-routing.env" ]]; then
+  cp -a "$remote_dir/core/data/display-routing.env" \
+    "$preserve_dir/core/data/display-routing.env"
+fi
+if [[ -f "$remote_dir/core/config/pulsar.local.env" ]]; then
+  cp -a "$remote_dir/core/config/pulsar.local.env" \
+    "$preserve_dir/core/config/pulsar.local.env"
+fi
+printf '[REMOTE] Preserved display routing and machine-local settings.\n'
 
 # Stop and remove an old continuous-sync user service so it cannot copy stale
 # files back into the freshly deployed directory.

@@ -208,6 +208,60 @@ void applyLowLatencyAcquisitionSetup(GX_DEV_HANDLE device, int targetFps) {
   setFloat(device, "AcquisitionFrameRate", static_cast<double>(std::max(targetFps, 1)));
 }
 
+bool applyHighFpsRoiOverride(
+    GX_DEV_HANDLE device,
+    int targetFps,
+    int& configuredScale) {
+  if (!envEnabled("PULSAR_CAMERA_HARDWARE_ROI", false)) return false;
+
+  const int roiWidth = envInt("PULSAR_CAMERA_ROI_WIDTH", 1920, 320, 8192);
+  const int roiHeight = envInt("PULSAR_CAMERA_ROI_HEIGHT", 1080, 240, 8192);
+  const int exposureUs = envInt("PULSAR_CAMERA_EXPOSURE_US", 9000, 10, 1000000);
+
+  // Keep the imported color calibration, white balance, gamma and LUT, but
+  // override only timing and sensor geometry for the high-frame-rate path.
+  // Geometry is applied before AcquisitionFrameRate because the camera's
+  // allowed frame-rate range depends on the active number of sensor rows.
+  setEnumOneOf(device, "RegionSelector", {"Region0", "Region1"});
+  setEnum(device, "RegionMode", "Off");
+
+  setEnumOneOf(device, "BinningHorizontalMode", {"Average", "Sum"});
+  setEnumOneOf(device, "BinningVerticalMode", {"Average", "Sum"});
+  setInt(device, "BinningHorizontal", 1);
+  setInt(device, "BinningVertical", 1);
+  setInt(device, "DecimationHorizontal", 1);
+  setInt(device, "DecimationVertical", 1);
+  setInt(device, "SensorDecimationHorizontal", 1);
+  setInt(device, "SensorDecimationVertical", 1);
+
+  setBool(device, "CenterX", false);
+  setBool(device, "CenterY", false);
+  setInt(device, "OffsetX", 0);
+  setInt(device, "OffsetY", 0);
+
+  const bool widthSet = setInt(device, "Width", roiWidth);
+  const bool heightSet = setInt(device, "Height", roiHeight);
+
+  // Center the ROI after Width/Height have changed. Prefer camera-native
+  // CenterX/CenterY; fall back to an increment-aligned midpoint offset.
+  if (!setBool(device, "CenterX", true)) {
+    GX_INT_VALUE offset{};
+    if (getInt(device, "OffsetX", offset)) setInt(device, "OffsetX", offset.nMax / 2);
+  }
+  if (!setBool(device, "CenterY", true)) {
+    GX_INT_VALUE offset{};
+    if (getInt(device, "OffsetY", offset)) setInt(device, "OffsetY", offset.nMax / 2);
+  }
+
+  setExposureAutoEnabled(device, false);
+  setEnum(device, "GainAuto", "Off");
+  setFloat(device, "ExposureTime", static_cast<double>(exposureUs));
+  applyLowLatencyAcquisitionSetup(device, targetFps);
+
+  configuredScale = 1;
+  return widthSet && heightSet;
+}
+
 std::string lowerAscii(std::string value) {
   std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
     return static_cast<char>(std::tolower(ch));
@@ -958,6 +1012,15 @@ bool CameraDevice::configure() {
     applyControls(controls_(), true);
   }
 
+  const bool roiRequested = envEnabled("PULSAR_CAMERA_HARDWARE_ROI", false);
+  const bool roiApplied = applyHighFpsRoiOverride(
+      device_, targetFps_, configuredSensorScale_);
+  if (roiRequested && !roiApplied) {
+    std::cerr << label_
+              << ": hardware ROI could not be applied to both Width and Height\n";
+    if (envEnabled("PULSAR_CAMERA_ROI_REQUIRED", true)) return false;
+  }
+
   // Keep only host-side latency optimizations outside profile authority.
   // These do not alter exposure, gain, color, LUT, ROI or sensor geometry.
   GX_DS_HANDLE streamHandle = nullptr;
@@ -970,11 +1033,22 @@ bool CameraDevice::configure() {
       ? static_cast<GX_PORT_HANDLE>(streamHandle)
       : static_cast<GX_PORT_HANDLE>(device_);
 
-  // PULSAR_REFERENCE_USB_TRANSPORT_V4
-  // Match the known-good ZIP transport for full 4024x3036 Bayer frames.
-  // These are host/USB stream parameters and do not alter image pixels.
-  setInt(streamPort, "StreamTransferSize", 1024 * 1024);
-  setInt(streamPort, "StreamTransferNumberUrb", 200);
+  // ROI 1920x1080 at 89 fps is about 184.6 MB/s of BayerRG8 payload per
+  // camera. A bounded per-camera throughput request avoids asking two cameras
+  // on the same xHCI controller for more aggregate bandwidth than required.
+  const int linkThroughputBps = envInt(
+      "PULSAR_CAMERA_LINK_THROUGHPUT_BPS", 220000000, 100000000, 500000000);
+  const int streamTransferSize = envInt(
+      "PULSAR_STREAM_TRANSFER_SIZE", 1024 * 1024, 64 * 1024, 4 * 1024 * 1024);
+  const int streamTransferUrb = envInt(
+      "PULSAR_STREAM_TRANSFER_URB", 96, 8, 512);
+
+  if (!setEnumOneOf(device_, "DeviceLinkThroughputLimitMode", {"On"})) {
+    setBool(device_, "DeviceLinkThroughputLimitMode", true);
+  }
+  setInt(device_, "DeviceLinkThroughputLimit", linkThroughputBps);
+  setInt(streamPort, "StreamTransferSize", streamTransferSize);
+  setInt(streamPort, "StreamTransferNumberUrb", streamTransferUrb);
   setInt(streamPort, "AcquisitionBufferCachePrec", 40);
   setBool(device_, "FrameStoreCoverActive", true);
   setEnum(device_, "CoverFrameStoreMode", "On");
@@ -988,7 +1062,8 @@ bool CameraDevice::configure() {
     streamBufferMode = "OldestFirstOverwrite";
   }
 
-  constexpr uint64_t kAcquisitionBufferCount = 2;
+  const uint64_t kAcquisitionBufferCount = static_cast<uint64_t>(
+      envInt("PULSAR_ACQUISITION_BUFFER_COUNT", 2, 2, 4));
 
   if (GXSetAcqusitionBufferNumber(device_, kAcquisitionBufferCount) !=
       GX_STATUS_SUCCESS) {
@@ -998,7 +1073,10 @@ bool CameraDevice::configure() {
 
   std::cerr << label_ << ": low-latency stream-buffer-mode="
             << streamBufferMode << " acquisition-buffers="
-            << kAcquisitionBufferCount << '\n';
+            << kAcquisitionBufferCount
+            << " link-throughput-requested-bps=" << linkThroughputBps
+            << " transfer-size=" << streamTransferSize
+            << " transfer-urb=" << streamTransferUrb << '\n';
 
   colorFilter_ = GX_COLOR_FILTER_NONE;
 
